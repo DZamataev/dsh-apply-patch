@@ -45,6 +45,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && tsdown",
+    "prepack": "npm run build",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc -p tsconfig.json",
     "typecheck:0.1.5": "node scripts/typecheck-0.1.5.mjs",
