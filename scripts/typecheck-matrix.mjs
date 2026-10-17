@@ -22,6 +22,7 @@ const MATRIX = [
   '0.1.5-rc.3',
   '0.1.7-rc.2',
   '0.2.0-rc.2',
+  '0.2.1-rc.1',
 ]
 // All host peers the plugin consumes (client packages included — the client
 // half compiles against dsh-client-ui-slots; dsh-settings backs the 0.1.0/0.1.1

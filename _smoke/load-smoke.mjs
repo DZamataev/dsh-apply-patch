@@ -247,14 +247,14 @@ function oldHostCtx(onImpl) {
 try {
   settingsInjects.length = 0
   const before = registered.size
-  const { ctx2, reg2 } = oldHostCtx(() => {}) // 无 volatile-update 事件面
+  const { ctx2 } = oldHostCtx(() => {}) // 无 volatile-update 事件面
   apply(ctx2, {})
   if (!registered.has('apply_patch') || registered.size !== before + 1) throw new Error('tool not registered on old-host shape: ' + [...registered.keys()].join(','))
   ok('old-host shape (plain entry): tool registers via the same apply')
 } catch (error) { bad('old-host absence (no volatile-update)', error) }
 
 try {
-  const { ctx2, reg2 } = oldHostCtx(() => { throw new Error('unknown event') }) // ctx.on 直接 throw
+  const { ctx2 } = oldHostCtx(() => { throw new Error('unknown event') }) // ctx.on 直接 throw
   apply(ctx2, {})
   if (!registered.has('apply_patch_1')) throw new Error('apply must survive a throwing ctx.on: ' + [...registered.keys()].join(','))
   ok('old-host shape (ctx.on throws): degrade silently')

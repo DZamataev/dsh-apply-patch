@@ -6,12 +6,12 @@
 
 ## DSH 버전 호환성
 
-**v0.4.0은 전체 호스트 라인을 단일 버전으로 커버합니다**: `0.1.0-rc.8`부터 `0.2.0-rc.2`까지(15개 rc 전부 + desktop) 모든 DSH 호스트를 같은 버전이 지원합니다. 이전의 4개 라인(`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7`, `main` 분할 방식)은 모두 은퇴했습니다. 배포 후 npm dist-tag `latest`, `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5`, `dsh-0.1.2`는 모두 0.4.0을 가리킵니다.
+**v0.4.0은 전체 호스트 라인을 단일 버전으로 커버합니다**: `0.1.0-rc.2`부터 `0.2.1-rc.1`까지(16개 rc 전부 + desktop) 모든 DSH 호스트를 같은 버전이 지원합니다. 이전의 4개 라인(`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7`, `main` 분할 방식)은 모두 은퇴했습니다. 배포 후 npm dist-tag `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5`, `dsh-0.1.2`는 모두 0.4.0을 가리킵니다.
 
 | DSH 버전 | 상태 | 비고 |
 |---|---|---|
 | `0.2.0-rc.1+` | ✅ 지원됨(동일한 v0.4.0) | 선언적 설정: `.volatile()`로 표시된 필드가 곧 설정 폼이며, `loader/volatile-update`가 리마운트 없이 도구를 그 자리에서 재등록합니다. 플러그인 페이지 설정 카드(client 쪽)는 이 라인에 자리가 있습니다. |
-| `0.1.0-rc.8` ~ `0.1.7-rc.2` | ✅ 지원됨(동일한 v0.4.0) | 세대별 설정: 인스턴스 `settings.installSection`/`register`(0.1.2/0.1.5) 또는 `@deepseek-ai/dsh-settings`의 모듈 수준 `installSettingsSection`(0.1.0/0.1.1). 플러그인 페이지 설정 카드는 여기에 우아하게 부재합니다. |
+| `0.1.0-rc.2` ~ `0.1.7-rc.2` | ✅ 지원됨(동일한 v0.4.0) | 세대별 설정: 인스턴스 `settings.installSection`/`register`(0.1.2/0.1.5) 또는 `@deepseek-ai/dsh-settings`의 모듈 수준 `installSettingsSection`(0.1.0/0.1.1). 플러그인 페이지 설정 카드는 여기에 우아하게 부재합니다. |
 
 **동작 변경**: `allowCodexPatch` 기본값이 `false`로 바뀌었습니다(옵트인, 0.2.0 라인과 정렬). 기존 0.1.7 라인(기본값 `true`)에서 업그레이드하는 사용자는 업그레이드 후 스위치를 수동으로 켜야 합니다.
 
@@ -116,8 +116,8 @@ dsh web --dump-config   # verify the plugin row appears
 
 ```bash
 npm install
-npm run typecheck        # against 0.2.0-rc.1 peers (devDependencies)
-npm run typecheck:0.2.0  # against real 0.2.0-rc.1 peer packages installed from the registry (dual-baseline proof)
+npm run typecheck        # against 0.2.1-rc.1 peers (devDependencies)
+npm run typecheck:0.2.1  # against real 0.2.1-rc.1 peer packages installed from the registry (dual-baseline proof)
 npm test                 # vitest, 92 tests
 npm run lint
 npm run build            # lib/

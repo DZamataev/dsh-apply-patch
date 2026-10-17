@@ -6,12 +6,12 @@
 
 ## DSH バージョン互換性
 
-**v0.4.0 は全ホストラインを 1 つのバージョンでカバーします**：`0.1.0-rc.8` から `0.2.0-rc.2` まで（15 個の rc 全部 + desktop）のすべての DSH ホストを同じバージョンが担当します。旧来の 4 本のライン（`compat/0.1.2`、`compat/0.1.5`、`compat/0.1.7`、`main` 分割スキーム）は引退しました。公開後、npm dist-tag の `latest`、`dsh-0.2.0`、`dsh-0.1.7`、`dsh-0.1.5`、`dsh-0.1.2` はすべて 0.4.0 を指します。
+**v0.4.0 は全ホストラインを 1 つのバージョンでカバーします**：`0.1.0-rc.2` から `0.2.1-rc.1` まで（16 個の rc 全部 + desktop）のすべての DSH ホストを同じバージョンが担当します。旧来の 4 本のライン（`compat/0.1.2`、`compat/0.1.5`、`compat/0.1.7`、`main` 分割スキーム）は引退しました。公開後、npm dist-tag の `dsh-0.2.0`、`dsh-0.1.7`、`dsh-0.1.5`、`dsh-0.1.2` はすべて 0.4.0 を指します。
 
 | DSH バージョン | ステータス | 備考 |
 |---|---|---|
 | `0.2.0-rc.1+` | ✅ サポート対象（同じ v0.4.0） | 宣言的設定：`.volatile()` を付けたフィールドがそのまま設定フォームになり、`loader/volatile-update` が再マウントなしでツールをその場で再登録します。プラグインページの設定カード（client 側）はこのラインに席があります。 |
-| `0.1.0-rc.8` ~ `0.1.7-rc.2` | ✅ サポート対象（同じ v0.4.0） | 世代ごとの設定：インスタンスの `settings.installSection`/`register`（0.1.2/0.1.5）、または `@deepseek-ai/dsh-settings` のモジュールレベル `installSettingsSection`（0.1.0/0.1.1）。プラグインページの設定カードはここでは適切に省かれます。 |
+| `0.1.0-rc.2` ~ `0.1.7-rc.2` | ✅ サポート対象（同じ v0.4.0） | 世代ごとの設定：インスタンスの `settings.installSection`/`register`（0.1.2/0.1.5）、または `@deepseek-ai/dsh-settings` のモジュールレベル `installSettingsSection`（0.1.0/0.1.1）。プラグインページの設定カードはここでは適切に省かれます。 |
 
 **挙動変更**：`allowCodexPatch` の既定値は `false` になりました（オプトイン、0.2.0 ラインに合わせました）。旧 0.1.7 ライン（既定 `true`）からアップグレードした場合は、アップグレード後に手動でスイッチを有効にしてください。
 
@@ -116,8 +116,8 @@ dsh web --dump-config   # verify the plugin row appears
 
 ```bash
 npm install
-npm run typecheck        # against 0.2.0-rc.1 peers (devDependencies)
-npm run typecheck:0.2.0  # against real 0.2.0-rc.1 peer packages installed from the registry (dual-baseline proof)
+npm run typecheck        # against 0.2.1-rc.1 peers (devDependencies)
+npm run typecheck:0.2.1  # against real 0.2.1-rc.1 peer packages installed from the registry (dual-baseline proof)
 npm test                 # vitest, 92 tests
 npm run lint
 npm run build            # lib/

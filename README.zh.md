@@ -6,12 +6,12 @@
 
 ## DSH 版本适配矩阵
 
-**v0.4.0 是单版本覆盖全宿主线**：一个版本服务 `0.1.0-rc.8` 到 `0.2.0-rc.2` 的所有 DSH 宿主（全部 15 个 rc + desktop）。旧的四条线（`compat/0.1.2`、`compat/0.1.5`、`compat/0.1.7` 与 `main` 分线方案）全部退役；发布后 npm dist-tag `latest`、`dsh-0.2.0`、`dsh-0.1.7`、`dsh-0.1.5`、`dsh-0.1.2` 将全部指向 0.4.0。
+**v0.4.0 是单版本覆盖全宿主线**：一个版本服务 `0.1.0-rc.2` 到 `0.2.1-rc.1` 的所有 DSH 宿主（全部 16 个 rc + desktop）。旧的四条线（`compat/0.1.2`、`compat/0.1.5`、`compat/0.1.7` 与 `main` 分线方案）全部退役；发布后 npm dist-tag `dsh-0.2.0`、`dsh-0.1.7`、`dsh-0.1.5`、`dsh-0.1.2` 将全部指向 0.4.0。
 
 | DSH 版本 | 状态 | 说明 |
 |---|---|---|
 | `0.2.0-rc.1+` | ✅ 支持（同一个 v0.4.0） | 声明式设置：`Config` 中标记 `.volatile()` 的字段即设置表单，`loader/volatile-update` 驱动工具原位重注册（不 remount）。插件页配置卡（client 半）在本线有席位。 |
-| `0.1.0-rc.8` ~ `0.1.7-rc.2` | ✅ 支持（同一个 v0.4.0） | 按代际提供设置：实例 `settings.installSection`/`register`（0.1.2/0.1.5）或 `@deepseek-ai/dsh-settings` 模块级 `installSettingsSection`（0.1.0/0.1.1）。插件页配置卡在本线优雅缺席。 |
+| `0.1.0-rc.2` ~ `0.1.7-rc.2` | ✅ 支持（同一个 v0.4.0） | 按代际提供设置：实例 `settings.installSection`/`register`（0.1.2/0.1.5）或 `@deepseek-ai/dsh-settings` 模块级 `installSettingsSection`（0.1.0/0.1.1）。插件页配置卡在本线优雅缺席。 |
 
 **行为变更**：`allowCodexPatch` 默认值改为 `false`（opt-in，与 0.2.0 线对齐）。从旧 0.1.7 线（默认 `true`）升级的用户需在升级后手动打开该开关。
 
@@ -115,8 +115,8 @@ dsh web --dump-config   # 确认插件行出现
 
 ```bash
 npm install
-npm run typecheck        # 针对 0.2.0-rc.1 peer 包（devDependencies）
-npm run typecheck:0.2.0  # 从 registry 干净安装真实 0.2.0-rc.1 peer 包做类型核验（双基线证明）
+npm run typecheck        # 针对 0.2.1-rc.1 peer 包（devDependencies）
+npm run typecheck:0.2.1  # 从 registry 干净安装真实 0.2.1-rc.1 peer 包做类型核验（双基线证明）
 npm test                 # vitest，92 个用例
 npm run lint
 npm run build            # lib/

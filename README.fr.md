@@ -6,12 +6,12 @@ Français | [English](./README.md) | [简体中文](./README.zh.md) | [日本語
 
 ## Compatibilité des versions de DSH
 
-**La v0.4.0 est une version unique couvrant toute la ligne d'hôtes** : une seule version sert tous les DSH de `0.1.0-rc.8` à `0.2.0-rc.2` (les 15 rc plus desktop). Les quatre anciennes lignes (`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7` et le schéma de scission `main`) sont retirées ; après publication, les dist-tags npm `latest`, `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5` et `dsh-0.1.2` pointeront tous vers 0.4.0.
+**La v0.4.0 est une version unique couvrant toute la ligne d'hôtes** : une seule version sert tous les DSH de `0.1.0-rc.2` à `0.2.1-rc.1` (les 16 rc plus desktop). Les quatre anciennes lignes (`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7` et le schéma de scission `main`) sont retirées ; après publication, les dist-tags npm `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5` et `dsh-0.1.2` pointeront tous vers 0.4.0.
 
 | Version de DSH | Statut | Notes |
 |---|---|---|
 | `0.2.0-rc.1+` | ✅ pris en charge (même v0.4.0) | Paramètres déclaratifs : les champs marqués `.volatile()` constituent le formulaire de paramètres, et `loader/volatile-update` réenregistre l'outil sans remontage (remount). La carte de configuration de la page du plugin (moitié client) a sa place sur cette ligne. |
-| `0.1.0-rc.8` ~ `0.1.7-rc.2` | ✅ pris en charge (même v0.4.0) | Paramètres par génération : `settings.installSection`/`register` d'instance (0.1.2/0.1.5) ou `installSettingsSection` au niveau module de `@deepseek-ai/dsh-settings` (0.1.0/0.1.1). La carte de configuration de la page du plugin est absente avec élégance ici. |
+| `0.1.0-rc.2` ~ `0.1.7-rc.2` | ✅ pris en charge (même v0.4.0) | Paramètres par génération : `settings.installSection`/`register` d'instance (0.1.2/0.1.5) ou `installSettingsSection` au niveau module de `@deepseek-ai/dsh-settings` (0.1.0/0.1.1). La carte de configuration de la page du plugin est absente avec élégance ici. |
 
 **Changement de comportement :** `allowCodexPatch` est désormais `false` par défaut (opt-in, aligné sur la ligne 0.2.0). Si vous mettez à niveau depuis l'ancienne ligne 0.1.7 (où la valeur par défaut était `true`), activez l'interrupteur manuellement après la mise à niveau.
 
@@ -116,8 +116,8 @@ Activez avec `allowCodexPatch: true`. Quand un patch Codex arrive alors que l'op
 
 ```bash
 npm install
-npm run typecheck        # against 0.2.0-rc.1 peers (devDependencies)
-npm run typecheck:0.2.0  # against real 0.2.0-rc.1 peer packages installed from the registry (dual-baseline proof)
+npm run typecheck        # against 0.2.1-rc.1 peers (devDependencies)
+npm run typecheck:0.2.1  # against real 0.2.1-rc.1 peer packages installed from the registry (dual-baseline proof)
 npm test                 # vitest, 92 tests
 npm run lint
 npm run build            # lib/

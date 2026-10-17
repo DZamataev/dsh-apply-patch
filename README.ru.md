@@ -6,12 +6,12 @@
 
 ## Совместимость с версиями DSH
 
-**v0.4.0 — единая версия, покрывающая всю линию хостов**: одна версия обслуживает все DSH от `0.1.0-rc.8` до `0.2.0-rc.2` (все 15 rc плюс desktop). Четыре прежние линии (`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7` и схема разделения по `main`) выведены из эксплуатации; после публикации npm dist-tag'и `latest`, `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5` и `dsh-0.1.2` будут указывать на 0.4.0.
+**v0.4.0 — единая версия, покрывающая всю линию хостов**: одна версия обслуживает все DSH от `0.1.0-rc.2` до `0.2.1-rc.1` (все 16 rc плюс desktop). Четыре прежние линии (`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7` и схема разделения по `main`) выведены из эксплуатации; после публикации npm dist-tag'и `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5` и `dsh-0.1.2` будут указывать на 0.4.0.
 
 | Версия DSH | Статус | Примечания |
 |---|---|---|
 | `0.2.0-rc.1+` | ✅ поддерживается (та же v0.4.0) | Декларативные настройки: поля, помеченные `.volatile()`, становятся формой настроек, а `loader/volatile-update` перерегистрирует инструмент без перемонтирования. Карточка конфигурации на странице плагина (клиентская половина) на этой линии присутствует. |
-| `0.1.0-rc.8` ~ `0.1.7-rc.2` | ✅ поддерживается (та же v0.4.0) | Настройки по поколениям: экземплярные `settings.installSection`/`register` (0.1.2/0.1.5) либо модульный `installSettingsSection` из `@deepseek-ai/dsh-settings` (0.1.0/0.1.1). Карточка конфигурации на странице плагина здесь изящно отсутствует. |
+| `0.1.0-rc.2` ~ `0.1.7-rc.2` | ✅ поддерживается (та же v0.4.0) | Настройки по поколениям: экземплярные `settings.installSection`/`register` (0.1.2/0.1.5) либо модульный `installSettingsSection` из `@deepseek-ai/dsh-settings` (0.1.0/0.1.1). Карточка конфигурации на странице плагина здесь изящно отсутствует. |
 
 **Изменение поведения:** значение `allowCodexPatch` по умолчанию теперь `false` (включение вручную, выровнено с линией 0.2.0). При обновлении со старой линии 0.1.7 (где по умолчанию было `true`) переключатель нужно включить вручную после обновления.
 
@@ -116,8 +116,8 @@ dsh web --dump-config   # verify the plugin row appears
 
 ```bash
 npm install
-npm run typecheck        # against 0.2.0-rc.1 peers (devDependencies)
-npm run typecheck:0.2.0  # against real 0.2.0-rc.1 peer packages installed from the registry (dual-baseline proof)
+npm run typecheck        # against 0.2.1-rc.1 peers (devDependencies)
+npm run typecheck:0.2.1  # against real 0.2.1-rc.1 peer packages installed from the registry (dual-baseline proof)
 npm test                 # vitest, 92 tests
 npm run lint
 npm run build            # lib/

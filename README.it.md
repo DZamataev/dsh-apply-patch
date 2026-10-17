@@ -6,12 +6,12 @@ Modifica di file in stile patch per [DeepSeek Harness (DSH)](https://github.com/
 
 ## Compatibilità delle versioni DSH
 
-**La v0.4.0 è una singola versione che copre l'intera linea di host**: una sola versione serve tutti i DSH da `0.1.0-rc.8` a `0.2.0-rc.2` (tutti i 15 rc più desktop). Le quattro linee dismesse (`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7` e lo schema di biforcazione `main`) sono ritirate; dopo la pubblicazione, i dist-tag npm `latest`, `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5` e `dsh-0.1.2` punteranno tutti a 0.4.0.
+**La v0.4.0 è una singola versione che copre l'intera linea di host**: una sola versione serve tutti i DSH da `0.1.0-rc.2` a `0.2.1-rc.1` (tutti i 16 rc più desktop). Le quattro linee dismesse (`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7` e lo schema di biforcazione `main`) sono ritirate; dopo la pubblicazione, i dist-tag npm `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5` e `dsh-0.1.2` punteranno tutti a 0.4.0.
 
 | Versione DSH | Stato | Note |
 |---|---|---|
 | `0.2.0-rc.1+` | ✅ supportato (stessa v0.4.0) | Impostazioni dichiarative: i campi contrassegnati con `.volatile()` diventano il modulo delle impostazioni, e `loader/volatile-update` registra nuovamente lo strumento senza remount. La scheda di configurazione nella pagina del plugin (metà client) ha un posto su questa linea. |
-| `0.1.0-rc.8` ~ `0.1.7-rc.2` | ✅ supportato (stessa v0.4.0) | Impostazioni per generazione: `settings.installSection`/`register` di istanza (0.1.2/0.1.5) oppure `installSettingsSection` a livello di modulo di `@deepseek-ai/dsh-settings` (0.1.0/0.1.1). La scheda di configurazione nella pagina del plugin è assente con eleganza qui. |
+| `0.1.0-rc.2` ~ `0.1.7-rc.2` | ✅ supportato (stessa v0.4.0) | Impostazioni per generazione: `settings.installSection`/`register` di istanza (0.1.2/0.1.5) oppure `installSettingsSection` a livello di modulo di `@deepseek-ai/dsh-settings` (0.1.0/0.1.1). La scheda di configurazione nella pagina del plugin è assente con eleganza qui. |
 
 **Cambio di comportamento:** `allowCodexPatch` ora è `false` per impostazione predefinita (opt-in, allineato alla linea 0.2.0). Chi esegue l'aggiornamento dalla vecchia linea 0.1.7 (dove il predefinito era `true`) deve attivare l'interruttore manualmente dopo l'aggiornamento.
 
@@ -116,8 +116,8 @@ Si abilita con `allowCodexPatch: true`. Quando arriva una patch Codex mentre l'o
 
 ```bash
 npm install
-npm run typecheck        # against 0.2.0-rc.1 peers (devDependencies)
-npm run typecheck:0.2.0  # against real 0.2.0-rc.1 peer packages installed from the registry (dual-baseline proof)
+npm run typecheck        # against 0.2.1-rc.1 peers (devDependencies)
+npm run typecheck:0.2.1  # against real 0.2.1-rc.1 peer packages installed from the registry (dual-baseline proof)
 npm test                 # vitest, 92 tests
 npm run lint
 npm run build            # lib/

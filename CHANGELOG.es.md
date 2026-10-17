@@ -1,5 +1,18 @@
 # Registro de cambios
 
+
+## [0.4.2] — 2026-10-17
+
+### Cambios
+
+- **Línea de host `0.2.1-rc.1` compatible.** `engines.dsh`, los siete rangos de pares `@deepseek-ai/dsh-*` y `dsh.plugin.json` ahora enumeran 16 rc exactos (`0.1.0-rc.2` … `0.2.1-rc.1`) en lugar del rango `>=0.1.0-rc.8 <0.2.1-0` — desde 0.2.1-alpha.4 la puerta de compatibilidad juzga `engines.dsh` de forma independiente, y el viejo centinela `-0` rechazaba `0.2.1-rc.1`.
+- Las declaraciones de compatibilidad son enumeraciones exactas en todos los puntos: sin rangos abiertos; los hosts futuros no probados se rechazan.
+- Las devDependencies pasaron a la línea base real de pares `0.2.1-rc.1`; `npm run typecheck:0.2.1` (antes `:0.2.0`) verifica esa base con instalaciones limpias desde el registry; la matriz de typecheck cubre ahora siete líneas incluida `0.2.1-rc.1`.
+
+### Añadido
+
+- `prepack` ejecuta el build (npm pack ya no puede incluir un `lib/` obsoleto); `publishConfig.registry` fijado al registry oficial de npm.
+
 ## [0.4.0] — 2026-10-09
 
 ### Añadido

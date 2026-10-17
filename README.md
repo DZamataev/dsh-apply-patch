@@ -6,12 +6,12 @@ Patch-style file editing for [DeepSeek Harness (DSH)](https://github.com/deepsee
 
 ## DSH version compatibility
 
-**v0.4.0 is a single release covering the whole host line**: one version serves every DSH from `0.1.0-rc.8` to `0.2.0-rc.2` (all 15 rc releases plus desktop). The four retired lines (`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7`, and the `main` split-line scheme) are gone; after publishing, the npm dist-tags `latest`, `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5` and `dsh-0.1.2` all point to 0.4.0.
+**v0.4.0 is a single release covering the whole host line**: one version serves every DSH from `0.1.0-rc.2` to `0.2.1-rc.1` (all 16 rc releases plus desktop). The four retired lines (`compat/0.1.2`, `compat/0.1.5`, `compat/0.1.7`, and the `main` split-line scheme) are gone; after publishing, the npm dist-tags `dsh-0.2.0`, `dsh-0.1.7`, `dsh-0.1.5` and `dsh-0.1.2` all point to 0.4.0.
 
 | DSH version | Status | Notes |
 |---|---|---|
 | `0.2.0-rc.1+` | ✅ supported (same v0.4.0) | Declarative settings: fields marked `.volatile()` become the settings form, and `loader/volatile-update` re-registers the tool in place without a remount. The plugin-page configuration card (client half) has a seat on this line. |
-| `0.1.0-rc.8` ~ `0.1.7-rc.2` | ✅ supported (same v0.4.0) | Settings per generation: instance `settings.installSection`/`register` (0.1.2/0.1.5) or the module-level `installSettingsSection` of `@deepseek-ai/dsh-settings` (0.1.0/0.1.1). The plugin-page configuration card is gracefully absent here. |
+| `0.1.0-rc.2` ~ `0.1.7-rc.2` | ✅ supported (same v0.4.0) | Settings per generation: instance `settings.installSection`/`register` (0.1.2/0.1.5) or the module-level `installSettingsSection` of `@deepseek-ai/dsh-settings` (0.1.0/0.1.1). The plugin-page configuration card is gracefully absent here. |
 
 **Behavior change:** `allowCodexPatch` now defaults to `false` (opt-in, aligned with the 0.2.0 line). If you upgrade from the old 0.1.7 line (where the default was `true`), enable the switch manually after upgrading.
 
@@ -116,8 +116,8 @@ Enable with `allowCodexPatch: true`. When a Codex patch arrives while disabled, 
 
 ```bash
 npm install
-npm run typecheck        # against 0.2.0-rc.1 peers (devDependencies)
-npm run typecheck:0.2.0  # against real 0.2.0-rc.1 peer packages installed from the registry (dual-baseline proof)
+npm run typecheck        # against 0.2.1-rc.1 peers (devDependencies)
+npm run typecheck:0.2.1  # against real 0.2.1-rc.1 peer packages installed from the registry (dual-baseline proof)
 npm test                 # vitest, 92 tests
 npm run lint
 npm run build            # lib/

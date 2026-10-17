@@ -1,6 +1,19 @@
 # 更新日志
 
 
+
+## [0.4.2] — 2026-10-17
+
+### 变更
+
+- **支持宿主 `0.2.1-rc.1` 线。** `engines.dsh`、全部 7 个 `@deepseek-ai/dsh-*` peer 范围与 `dsh.plugin.json` 改为 16 个精确 rc 枚举（`0.1.0-rc.2` … `0.2.1-rc.1`），不再使用 `>=0.1.0-rc.8 <0.2.1-0` 区间——0.2.1-alpha.4 起兼容闸门单独裁决 `engines.dsh`，旧的 `-0` 上界哨兵会把 `0.2.1-rc.1` 判为越界拒载。
+- 兼容声明一律精确枚举：不放开区间，未测未来宿主一律拒绝。
+- devDependencies 换代到真实 `0.2.1-rc.1` peer 基线；`npm run typecheck:0.2.1`（原 `:0.2.0`）从 registry 干净安装核验该基线；类型校验矩阵扩展到七条宿主线（含 `0.2.1-rc.1`）。
+
+### 新增
+
+- `prepack` 触发构建（npm pack 不再可能带出过期 `lib/`）；`publishConfig.registry` 钉死官方 npm registry。
+
 ## [0.4.0] — 2026-10-09
 
 ### 新增

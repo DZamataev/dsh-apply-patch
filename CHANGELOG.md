@@ -1,6 +1,19 @@
 # Changelog
 
 
+
+## [0.4.2] — 2026-10-17
+
+### Changed
+
+- **Host line `0.2.1-rc.1` supported.** `engines.dsh`, all seven `@deepseek-ai/dsh-*` peer ranges and `dsh.plugin.json` now enumerate 16 exact rc releases (`0.1.0-rc.2` … `0.2.1-rc.1`) instead of the `>=0.1.0-rc.8 <0.2.1-0` range — since 0.2.1-alpha.4 the compat gate adjudicates `engines.dsh` standalone, and the old `-0` upper sentinel rejected `0.2.1-rc.1`.
+- Compatibility declarations are exact enumerations everywhere: no open ranges, untested future hosts are refused.
+- devDependencies moved to the real `0.2.1-rc.1` peer baseline; `npm run typecheck:0.2.1` (was `:0.2.0`) proves that baseline from clean registry installs; the typecheck matrix now covers seven host lines including `0.2.1-rc.1`.
+
+### Added
+
+- `prepack` runs the build (npm pack can no longer ship a stale `lib/`); `publishConfig.registry` pinned to the official npm registry.
+
 ## [0.4.0] — 2026-10-09
 
 ### Added
