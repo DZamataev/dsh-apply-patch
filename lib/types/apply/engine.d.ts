@@ -9,48 +9,45 @@
  * change since (the `fs/write-intent` waterfall decides, as for the native
  * `write` tool).
  *
- * `commitPatch` performs the writes first and the removals last. Every write
- * and every removal is guarded by the version the patch expects: the version
- * checked while preparing for existing files, the version our own write
- * returned for files the patch created. When one step fails, the steps already
- * done are undone in reverse order with the same guards and without the call's
- * abort signal; a file changed by someone else in the meantime is left as it
- * is, and a move destination is kept when its source could not be put back.
- * The error names every file whose undo was incomplete or whose state is
- * unknown.
+ * `commitPatch` performs the steps in patch order: writes of updated and added
+ * files, moves, and deletions. Every step is guarded by the version the patch
+ * expects: the version checked while preparing for existing files, the version
+ * our own step left for files the patch created or moved. When one step fails,
+ * the steps already done are undone in reverse order with the same guards and
+ * without the call's abort signal; a file changed by someone else in the
+ * meantime is left as it is. The error names every file whose undo was
+ * incomplete or whose state is unknown.
+ *
+ * Writes go through `ctx.fs.writeText`. `ctx.fs` cannot rename or delete, so
+ * moves and deletions use one constant POSIX shell command ({@link RELINK})
+ * run through the session's shell with the paths in environment variables and
+ * the call's sandbox policy. It gives the file a new name with a hard link,
+ * which never replaces an existing file, and then removes the old name if it
+ * still names the same file. The file keeps its inode, permission bits
+ * (including setuid, setgid and sticky), and bytes.
+ *
+ * - Move to: the source is relinked to the destination (missing parent
+ *   directories are created first). With changes, the new text is then written
+ *   to the destination, guarded by the version the move left.
+ * - Delete File: the file is relinked into a private staging directory next to
+ *   it (`.dsh-apply-patch-trash-<random>`, mode 700). The staging directories
+ *   are removed only after the whole patch succeeded; an undo relinks the file
+ *   back, so any file, binary included, is restored byte for byte with its mode.
+ * - Undoing an added file relinks it into staging too, and staging is removed
+ *   after the undo; undoing a move relinks the destination back to the source.
+ *
+ * Each relink stats the old name just before the command and runs only if it is
+ * still the expected version, then stats both names to learn the outcome,
+ * whatever the shell reported. The check and the command are not atomic; see
+ * the threat model in the README.
  *
  * Read observations (`fs/observed`) are published for every changed file after
  * the whole patch succeeded; after a failure, only for the files the undo put
  * back, whose state is then known.
- *
- * Permission bits: `ctx.fs` creates files with its default mode and has no mode
- * API, so on POSIX the shell carries them. While preparing, the mode of every
- * text file to be deleted or moved is read with a constant `stat` command; a
- * mode that cannot be read (the command fails or prints something other than
- * 1–4 octal digits) refuses the patch before anything is written, so an undo
- * never restores a file with the wrong bits. The removal's version guard covers
- * the mode, since a mode change is a new version. After writing a move
- * destination, and after restoring a removed file, a constant `chmod` sets the
- * mode. A mode change is a new version, so the file is then stat'ed and read
- * again: only when it still holds the text this patch wrote is that version
- * taken as ours. Otherwise someone else changed it in between (or it could not
- * be checked): it is not recorded as read, the undo leaves it as it is, and the
- * result or the undo notes name it. A failed `chmod` does not fail the patch: it
- * is named in the result, or in the undo notes. Windows has no POSIX mode;
- * nothing is carried there.
- *
- * Writes go through `ctx.fs.writeText`. `ctx.fs` cannot delete, so removals run
- * a constant `rm`/`Remove-Item` command through the session's shell with the
- * path in an environment variable and the call's sandbox policy. A removal
- * stats the file just before the command and compares the version; the check
- * and the command are not atomic, so a change in that window is still lost.
- * Full atomicity would need a versioned delete in `ctx.fs`. Delete File and
- * Move to refuse a symbolic link at the given path, so a link is never followed
- * to remove its target.
  * @module dsh-apply-patch/apply/engine
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { FsTarget, FsVersion, FsWriteIntent } from '@deepseek-ai/dsh-fs';
+import type { FileSystem, FsTarget, FsVersion, FsWriteIntent } from '@deepseek-ai/dsh-fs';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
 import type { ResolvedConfig } from '../config.js';
@@ -64,42 +61,68 @@ export interface FileChange {
     before: string | null;
     after: string | null;
 }
-/**
- * A write; `before` is null for a created file, `source` is the move source
- * removed by a later step, `mode` the POSIX mode to set after writing (`755`).
- */
-interface WriteStep {
-    kind: 'write';
+/** A file by its resolved target and its path as written in the patch (or the staging path). */
+interface Place {
     target: FsTarget;
     path: string;
+}
+/** A write in place; `before` is null for a created file. */
+interface WriteStep {
+    kind: 'write';
+    place: Place;
     guard: FsWriteIntent;
     before: string | null;
     after: string;
-    source?: {
-        path: string;
-        target: FsTarget;
-    };
-    mode?: string;
 }
-/**
- * A removal of the file at `version`; `before` is null for a file that cannot
- * be read as text, which therefore cannot be restored; `mode` is its POSIX mode,
- * set again when an undo restores it.
- */
-interface RemoveStep {
-    kind: 'remove';
-    target: FsTarget;
-    path: string;
+/** A move of the source at `version`; `after` is the text to write at the destination, null to keep the bytes. */
+interface MoveStep {
+    kind: 'move';
+    source: Place;
+    destination: Place;
     version: FsVersion;
-    before: string | null;
-    mode?: string;
+    before: string;
+    after: string | null;
 }
-type Step = WriteStep | RemoveStep;
+/** A deletion of the file at `version`: it is relinked to `staged`. */
+interface DeleteStep {
+    kind: 'delete';
+    place: Place;
+    version: FsVersion;
+    staged: Slot;
+}
+type Step = WriteStep | MoveStep | DeleteStep;
 /** A checked patch, ready to commit. */
 export interface PreparedPatch {
     files: FileChange[];
     steps: Step[];
     sandboxPolicy: SandboxExecutionPolicy | undefined;
+    staging: Staging;
+}
+/** A staged file: a name inside a staging directory. */
+interface Slot {
+    place: Place;
+    dir: StagingDir;
+}
+interface StagingDir {
+    path: string;
+    target: FsTarget;
+    made: boolean;
+    slots: number;
+}
+/**
+ * Staging directories, one per parent directory of a staged file, created by
+ * the first relink into them.
+ */
+declare class Staging {
+    private readonly fs;
+    private readonly policy;
+    readonly dirs: Map<string, StagingDir>;
+    constructor(fs: FileSystem, policy: SandboxExecutionPolicy | undefined);
+    /**
+     * A fresh name in the staging directory next to `target`.
+     * @throws {@link PatchError} when the name is outside what the sandbox allows.
+     */
+    slot(target: FsTarget, signal?: AbortSignal): Promise<Slot>;
 }
 /**
  * Resolve and check every operation and compute the new file texts.
@@ -116,7 +139,7 @@ export declare function preparePatch(ctx: Context, exec: ToolRunContext, patch: 
  * @param ctx - plugin context.
  * @param exec - the tool call.
  * @param prepared - the checked patch.
- * @returns notes on permission bits that could not be set on a move destination, and on a destination someone else changed right after it was written.
+ * @returns notes on deleted files whose staged copy could not be removed afterwards.
  * @throws {@link PatchError} naming the failed step, the files whose undo was incomplete and the files in an unknown state.
  */
 export declare function commitPatch(ctx: Context, exec: ToolRunContext, prepared: PreparedPatch): Promise<string[]>;

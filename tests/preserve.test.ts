@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { harness } from './harness.js'
@@ -67,5 +67,188 @@ describe('a UTF-8 byte order mark', () => {
     await h.observe('f')
     await expect(h.run(patch('*** Update File: f', '@@', '-old', '+new', `*** Add File: ${failing(h)}`, '+x'))).rejects.toThrow('were undone')
     expect(bytes(h, 'f')).toEqual(Buffer.from(`${BOM}first\nold\n`))
+  })
+})
+
+const mode = (h: Harness, path: string) => statSync(join(h.dir, path)).mode & 0o7777
+const inode = (h: Harness, path: string) => statSync(join(h.dir, path)).ino
+/** Entries of `dir` (relative to the harness root) left by staging. */
+const staged = (h: Harness, dir = '.') => readdirSync(join(h.dir, dir)).filter(name => name.startsWith('.dsh-apply-patch-trash-'))
+/** Replace the shell's `ln` with `script`, a POSIX sh body run before or instead of the real one. */
+const fakeLn = (h: Harness, script: string) => {
+  mkdirSync(join(h.dir, 'bin'))
+  writeFileSync(join(h.dir, 'bin/ln'), `#!/bin/sh\n${script}\n`, { mode: 0o700 })
+  const shell = h.ctx.get('shell') as { execute(spec: { env?: Record<string, string> }): Promise<unknown> }
+  const execute = shell.execute.bind(shell)
+  shell.execute = spec => execute({ ...spec, env: { ...spec.env, PATH: `${join(h.dir, 'bin')}:${process.env.PATH ?? ''}` } })
+}
+/** setuid, sticky, both; setgid is left out because a non-member of the directory's group cannot set it. */
+const SPECIAL = ['4755', '1755', '5755']
+/** Set an octal mode and check that the file system kept it. */
+const setMode = (h: Harness, path: string, octal: string) => {
+  chmodSync(join(h.dir, path), Number.parseInt(octal, 8))
+  expect(mode(h, path).toString(8)).toBe(octal)
+}
+
+describe('Move to', () => {
+  it.each(SPECIAL)('keeps the file itself: inode, bytes, mode %s', async bits => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'src'), `${BOM}one\r\ntwo`)
+    setMode(h, 'src', bits)
+    const ino = inode(h, 'src')
+    await h.observe('src')
+    await h.run(patch('*** Update File: src', '*** Move to: deep/dest'))
+    expect(existsSync(join(h.dir, 'src'))).toBe(false)
+    expect(bytes(h, 'deep/dest')).toEqual(Buffer.from(`${BOM}one\r\ntwo`))
+    expect(mode(h, 'deep/dest').toString(8)).toBe(bits)
+    expect(inode(h, 'deep/dest')).toBe(ino)
+  })
+
+  it.each(SPECIAL)('is undone by moving the same file back, mode %s', async bits => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'src'), `${BOM}text\n`)
+    setMode(h, 'src', bits)
+    const ino = inode(h, 'src')
+    writeFileSync(join(h.dir, 'other'), 'other\n')
+    await h.observe('src')
+    await h.observe('other')
+    mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/f'), 'f\n')
+    await h.observe('locked/f')
+    chmodSync(join(h.dir, 'locked'), 0o500)
+    locked.push(join(h.dir, 'locked'))
+    await expect(h.run(patch('*** Update File: src', '*** Move to: dest', '*** Delete File: other', '*** Delete File: locked/f'))).rejects.toThrow('The 2 earlier change(s) of this patch were undone.')
+    expect(bytes(h, 'src')).toEqual(Buffer.from(`${BOM}text\n`))
+    expect(mode(h, 'src').toString(8)).toBe(bits)
+    expect(inode(h, 'src')).toBe(ino)
+    expect(existsSync(join(h.dir, 'dest'))).toBe(false)
+    expect(bytes(h, 'other')).toEqual(Buffer.from('other\n'))
+    expect(staged(h)).toEqual([])
+    // With changes the text is written, and undone, through ctx.fs, which keeps only the 0777 bits.
+    await expect(h.run(patch('*** Update File: src', '*** Move to: dest', '@@', '-text', '+changed', '*** Delete File: locked/f'))).rejects.toThrow('were undone')
+    expect(bytes(h, 'src')).toEqual(Buffer.from(`${BOM}text\n`))
+    expect(mode(h, 'src')).toBe(0o755)
+    expect(existsSync(join(h.dir, 'dest'))).toBe(false)
+  })
+
+  it('changes nothing when the old name cannot be removed', async () => {
+    const h = await open()
+    mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/src'), 'x\n')
+    await h.observe('locked/src')
+    chmodSync(join(h.dir, 'locked'), 0o500)
+    locked.push(join(h.dir, 'locked'))
+    await expect(h.run(patch('*** Update File: locked/src', '*** Move to: dest'))).rejects.toMatchObject({ code: 'PATCH_IO', message: expect.stringContaining('No file had been changed.') })
+    expect(bytes(h, 'locked/src')).toEqual(Buffer.from('x\n'))
+    expect(existsSync(join(h.dir, 'dest'))).toBe(false)
+  })
+
+  it('never replaces a destination created after the check', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'src'), 'mine\n')
+    await h.observe('src')
+    fakeLn(h, `printf 'theirs\\n' > "$3"; exec /bin/ln "$@"`)
+    await expect(h.run(patch('*** Update File: src', '*** Move to: dest'))).rejects.toMatchObject({ code: 'PATCH_IO' })
+    expect(bytes(h, 'dest')).toEqual(Buffer.from('theirs\n'))
+    expect(bytes(h, 'src')).toEqual(Buffer.from('mine\n'))
+  })
+})
+
+describe('Delete File', () => {
+  it.each(SPECIAL)('is undone with the same file, also binary, mode %s', async bits => {
+    const h = await open()
+    const binary = Buffer.from([0xEF, 0xBB, 0xBF, 0, 255, 1, 2])
+    writeFileSync(join(h.dir, 'bin.dat'), binary)
+    writeFileSync(join(h.dir, 'text'), `${BOM}text\n`)
+    setMode(h, 'bin.dat', bits)
+    setMode(h, 'text', bits)
+    const ino = inode(h, 'bin.dat')
+    await h.observe('bin.dat')
+    await h.observe('text')
+    mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/f'), 'f\n')
+    await h.observe('locked/f')
+    chmodSync(join(h.dir, 'locked'), 0o500)
+    locked.push(join(h.dir, 'locked'))
+    await expect(h.run(patch('*** Delete File: bin.dat', '*** Delete File: text', '*** Delete File: locked/f'))).rejects.toThrow('The 2 earlier change(s) of this patch were undone.')
+    expect(bytes(h, 'bin.dat')).toEqual(binary)
+    expect(bytes(h, 'text')).toEqual(Buffer.from(`${BOM}text\n`))
+    expect([mode(h, 'bin.dat').toString(8), mode(h, 'text').toString(8)]).toEqual([bits, bits])
+    expect(inode(h, 'bin.dat')).toBe(ino)
+    expect(staged(h)).toEqual([])
+  })
+
+  it('leaves no staging directory after success', async () => {
+    const h = await open()
+    mkdirSync(join(h.dir, 'sub'))
+    writeFileSync(join(h.dir, 'a'), 'a\n')
+    writeFileSync(join(h.dir, 'sub/b'), 'b\n')
+    await h.observe('a')
+    await h.observe('sub/b')
+    await h.run(patch('*** Delete File: a', '*** Delete File: sub/b'))
+    expect(readdirSync(h.dir)).toEqual(['sub'])
+    expect(readdirSync(join(h.dir, 'sub'))).toEqual([])
+  })
+
+  it('keeps both versions when the file is replaced while it is being staged', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'f'), 'read version\n')
+    await h.observe('f')
+    fakeLn(h, `/bin/ln "$@" || exit 1; printf 'newer\\n' > "$2.new" && mv -f "$2.new" "$2"`)
+    const error = await h.run(patch('*** Delete File: f')).catch((e: Error) => e)
+    expect(error).toMatchObject({ code: 'PATCH_STALE' })
+    expect(bytes(h, 'f')).toEqual(Buffer.from('newer\n'))
+    const [dir] = staged(h)
+    expect(String(error)).toContain(`the version this session read is kept at "${join(h.dir, dir, '0')}"`)
+    expect(readFileSync(join(h.dir, dir, '0'), 'utf8')).toBe('read version\n')
+    expect(String(error)).not.toContain('No file had been changed')
+  })
+
+  it('keeps the staged file and names it when the name was taken again before the undo', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'f'), 'deleted\n')
+    await h.observe('f')
+    mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/g'), 'g\n')
+    await h.observe('locked/g')
+    chmodSync(join(h.dir, 'locked'), 0o500)
+    locked.push(join(h.dir, 'locked'))
+    h.mapShell((result, n) => {
+      if (n === 1) writeFileSync(join(h.dir, 'f'), 'recreated\n')
+      return result
+    })
+    const error = await h.run(patch('*** Delete File: f', '*** Delete File: locked/g')).catch((e: Error) => e)
+    const [dir] = staged(h)
+    expect(String(error)).toContain(`"f" was created again by someone else; the deleted file is kept at "${join(h.dir, dir, '0')}".`)
+    expect(bytes(h, 'f')).toEqual(Buffer.from('recreated\n'))
+    expect(readFileSync(join(h.dir, dir, '0'), 'utf8')).toBe('deleted\n')
+  })
+})
+
+describe('undoing an added file', () => {
+  it('stages it and removes the staging directory', async () => {
+    const h = await open()
+    mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/f'), 'f\n')
+    await h.observe('locked/f')
+    chmodSync(join(h.dir, 'locked'), 0o500)
+    locked.push(join(h.dir, 'locked'))
+    await expect(h.run(patch('*** Add File: new', '+n', '*** Delete File: locked/f'))).rejects.toThrow('The 1 earlier change(s) of this patch were undone.')
+    expect(readdirSync(h.dir).sort()).toEqual(['locked'])
+  })
+
+  it('leaves an added file that was replaced while it was being staged, and keeps ours', async () => {
+    const h = await open()
+    mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/f'), 'f\n')
+    await h.observe('locked/f')
+    chmodSync(join(h.dir, 'locked'), 0o500)
+    locked.push(join(h.dir, 'locked'))
+    fakeLn(h, `/bin/ln "$@" || exit 1; case "$2" in */new) printf 'theirs\\n' > "$2.x" && mv -f "$2.x" "$2" ;; esac`)
+    const error = await h.run(patch('*** Add File: new', '+ours', '*** Delete File: locked/f')).catch((e: Error) => e)
+    expect(String(error)).toContain('"new" was changed while it was being removed')
+    expect(bytes(h, 'new')).toEqual(Buffer.from('theirs\n'))
+    const [dir] = staged(h)
+    expect(readFileSync(join(h.dir, dir, '0'), 'utf8')).toBe('ours\n')
   })
 })

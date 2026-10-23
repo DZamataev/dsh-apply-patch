@@ -56,16 +56,19 @@ describe('removals are guarded like writes', () => {
     expect(read(h, 'victim')).toBe('external\n')
   })
 
-  it('keeps a move source that changes before its removal and undoes the destination', async () => {
+  it('keeps a move source that changes before it is moved and undoes the earlier steps', async () => {
     const h = await open()
     writeFileSync(join(h.dir, 'src'), 'old\n')
+    writeFileSync(join(h.dir, 'a'), 'a\n')
     await h.observe('src')
+    await h.observe('a')
     h.onFs('writeText', 1, () => writeFileSync(join(h.dir, 'src'), 'external\n'))
-    await expect(h.run(patch('*** Update File: src', '*** Move to: dest', '@@', '-old', '+patched'))).rejects.toMatchObject({
+    await expect(h.run(patch('*** Update File: a', '@@', '-a', '+A', '*** Update File: src', '*** Move to: dest', '@@', '-old', '+patched'))).rejects.toMatchObject({
       code: 'PATCH_STALE',
       message: expect.stringContaining('The 1 earlier change(s) of this patch were undone.'),
     })
     expect(read(h, 'src')).toBe('external\n')
+    expect(read(h, 'a')).toBe('a\n')
     expect(exists(h, 'dest')).toBe(false)
   })
 
@@ -73,8 +76,8 @@ describe('removals are guarded like writes', () => {
     const h = await open()
     writeFileSync(join(h.dir, 'gone'), 'x\n')
     await h.observe('gone')
-    // Shell command 1 reads the permission bits while preparing.
-    h.mapShell((result, n) => n === 1 ? result : { ...result, aborted: true })
+    // Shell command 1 stages the file, 2 removes the staging directory.
+    h.mapShell((result, n) => n === 1 ? { ...result, aborted: true } : result)
     await h.run(patch('*** Delete File: gone'))
     expect(exists(h, 'gone')).toBe(false)
   })
@@ -96,9 +99,9 @@ describe('removals are guarded like writes', () => {
     const h = await open()
     writeFileSync(join(h.dir, 'f'), 'f\n')
     await h.observe('f')
-    h.mapShell((result, n) => n === 1 ? result : { ...result, aborted: true })
-    // stat #1 is the check while preparing, #2 the check before removing, #3 the check after the shell.
-    h.onFs('stat', 3, () => { throw new Error('stat failed') }, 'before')
+    h.mapShell(result => ({ ...result, aborted: true }))
+    // stat #1 is the check while preparing, #2 the check before staging, #3 finds the staging directory, #4 checks the file after the shell.
+    h.onFs('stat', 4, () => { throw new Error('stat failed') }, 'before')
     const error = await h.run(patch('*** Delete File: f')).catch((e: Error) => e)
     expect(String(error)).toContain('The state of "f" is unknown')
     expect(String(error)).not.toContain('No file had been changed')
@@ -135,7 +138,7 @@ describe('rollback', () => {
     expect(exists(h, 'second')).toBe(false)
   })
 
-  it('keeps a move destination when the source cannot be restored', async () => {
+  it('keeps a move destination when the source name was taken again before the undo', async () => {
     const h = await open()
     mkdirSync(join(h.dir, 'locked'))
     writeFileSync(join(h.dir, 'locked/gone'), 'gone\n')
@@ -143,16 +146,14 @@ describe('rollback', () => {
     await h.observe('source')
     await h.observe('locked/gone')
     lock(join(h.dir, 'locked'))
-    // After the source is removed, something recreates it, so the original text cannot be put back.
-    // Shell commands 1 and 2 read the permission bits of both files, 3 sets them on the destination, 4 removes the source.
+    // Shell command 1 moves the source; then something creates a new file at the old name.
     h.mapShell((result, n) => {
-      if (n === 4) writeFileSync(join(h.dir, 'source'), 'concurrent\n')
+      if (n === 1) writeFileSync(join(h.dir, 'source'), 'concurrent\n')
       return result
     })
-    const error = await h.run(patch('*** Update File: source', '*** Move to: destination', '@@', '-original', '+moved', '*** Delete File: locked/gone')).catch((e: Error) => e)
-    expect(String(error)).toContain('"source" could not be restored')
-    expect(String(error)).toContain('The moved file is kept at "destination".')
-    expect(read(h, 'destination')).toBe('moved\n')
+    const error = await h.run(patch('*** Update File: source', '*** Move to: destination', '*** Delete File: locked/gone')).catch((e: Error) => e)
+    expect(String(error)).toContain('"source" was created again by someone else, so the moved file is kept at "destination".')
+    expect(read(h, 'destination')).toBe('original\n')
     expect(read(h, 'source')).toBe('concurrent\n')
   })
 
@@ -172,43 +173,27 @@ describe('rollback', () => {
     expect(read(h, 'tool.sh')).toBe('#!/bin/sh\necho public\n')
   })
 
-  it('keeps a move destination someone else rewrote right after its permission bits were set', async () => {
+  it.each([
+    ['right after the move', 1, '"dest" changed right after "src" was moved there, or could not be checked; it was left as it is.'],
+    ['before the undo', 2, '"dest" was changed after this patch moved "src" there; it was left as it is, and "src" was not put back.'],
+  ])('leaves a move destination someone else rewrote %s (shell command %i), and names it', async (_when, n, message) => {
     const h = await open()
     writeFileSync(join(h.dir, 'src'), 'original\n', { mode: 0o700 })
     await h.observe('src')
     mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/f'), 'f\n')
+    await h.observe('locked/f')
     lock(join(h.dir, 'locked'))
-    // Shell command 2 sets the permission bits on the destination.
-    h.mapShell((result, n) => {
-      if (n === 2) writeFileSync(join(h.dir, 'dest'), 'external work\n')
+    // Shell command 1 moves the file, 2 tries to stage locked/f.
+    h.mapShell((result, k) => {
+      if (k === n) writeFileSync(join(h.dir, 'dest'), 'external work\n')
       return result
     })
-    const error = await h.run(patch('*** Update File: src', '*** Move to: dest', '*** Add File: locked/f', '+fail')).catch((e: Error) => e)
-    expect(String(error)).toContain('"dest" changed after this patch wrote it')
+    const error = await h.run(patch('*** Update File: src', '*** Move to: dest', '*** Delete File: locked/f')).catch((e: Error) => e)
+    expect(String(error)).toContain(message)
     expect(read(h, 'dest')).toBe('external work\n')
-    expect(read(h, 'src')).toBe('original\n')
-  })
-
-  it('refuses to delete a file whose permission bits cannot be read, before changing anything', async () => {
-    const h = await open()
-    writeFileSync(join(h.dir, 'private'), 'private\n', { mode: 0o700 })
-    await h.observe('private')
-    h.mapShell((result, n) => n === 1 ? { ...result, stdout: { ...result.stdout, text: 'unexpected\n' } } : result)
-    await expect(h.run(patch('*** Delete File: private'))).rejects.toMatchObject({ code: 'PATCH_IO', message: expect.stringContaining('permission bits of "private"') })
-    expect(read(h, 'private')).toBe('private\n')
-  })
-
-  it('refuses to delete a file when stat fails in the shell', async () => {
-    const h = await open()
-    mkdirSync(join(h.dir, 'bin'))
-    writeFileSync(join(h.dir, 'bin/stat'), '#!/bin/sh\nexit 1\n', { mode: 0o700 })
-    const shell = h.ctx.get('shell') as { execute(spec: { env?: Record<string, string> }): Promise<unknown> }
-    const execute = shell.execute.bind(shell)
-    shell.execute = spec => execute({ ...spec, env: { ...spec.env, PATH: `${join(h.dir, 'bin')}:${process.env.PATH ?? ''}` } })
-    writeFileSync(join(h.dir, 'script'), 'echo private\n', { mode: 0o700 })
-    await h.observe('script')
-    await expect(h.run(patch('*** Delete File: script'))).rejects.toMatchObject({ code: 'PATCH_IO', message: expect.stringContaining('permission bits of "script"') })
-    expect(statSync(join(h.dir, 'script')).mode & 0o777).toBe(0o700)
+    expect(exists(h, 'src')).toBe(false)
+    expect(read(h, 'locked/f')).toBe('f\n')
   })
 
   it('records restored files as read, so the next patch need not re-read them', async () => {
