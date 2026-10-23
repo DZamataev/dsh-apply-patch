@@ -15,7 +15,11 @@
  *
  * Text around the markers (a heredoc, a code fence, prose) is ignored: the
  * patch runs from the first `*** Begin Patch` to the last `*** End Patch`.
- * Marker lines are compared after trimming surrounding whitespace.
+ * Those two and the operation headers are compared after trimming surrounding
+ * whitespace; `@@` and `*** End of File` inside an update only after trimming
+ * trailing whitespace, so an indented one is a context line. Two or more `@@`
+ * lines in a row stack labels and a first chunk may omit `@@` (codex-rs rejects
+ * stacked labels).
  * @module dsh-apply-patch/parse/codex
  */
 
@@ -102,50 +106,54 @@ function isOpHeader(line: string): boolean {
   return line.startsWith(ADD) || line.startsWith(DELETE) || line.startsWith(UPDATE)
 }
 
-/** Parse one chunk: its `@@` labels, body lines and an optional `*** End of File`. */
+/**
+ * Parse one chunk: its `@@` labels, body lines and an optional `*** End of File`.
+ * As in codex-rs, a label is the text after `@@ ` without trailing whitespace,
+ * markers inside the body are recognized only unindented (trailing whitespace
+ * ignored), and an unprefixed blank line is a blank context line. A chunk of
+ * nothing but unprefixed blank lines separates operations and yields `null`.
+ */
 function parseChunk(all: string[], start: number, end: number, path: string, first: boolean): { chunk: Chunk | null; next: number } {
   let i = start
   const labels: string[] = []
-  while (i < end && all[i].startsWith('@@')) {
-    const label = all[i].slice(2).trim()
+  for (; i < end && (all[i].trimEnd() === '@@' || all[i].startsWith('@@ ')); i += 1) {
+    const label = all[i].trimEnd().slice(3)
     if (label !== '') labels.push(label)
-    i += 1
+  }
+  if (i < end && all[i].startsWith('@@')) {
+    throw parseError(i + 1, `an @@ line must be "@@" alone or "@@ " followed by a line of the file; write "@@ " and the line, got ${JSON.stringify(all[i].slice(0, 60))}`)
   }
   if (i === start && !first) {
     throw parseError(start + 1, `expected an "@@" line before the next change in "${path}"; got ${JSON.stringify(all[i].slice(0, 60))}`)
   }
-  const oldLines: string[] = []
-  const newLines: string[] = []
+  const chunk: Chunk = { labels, oldLines: [], newLines: [], context: [], endOfFile: false }
   let changed = false
-  let endOfFile = false
-  while (i < end) {
+  let blankTail = 0
+  for (; i < end; i += 1) {
     const line = all[i]
-    if (line.trim() === EOF) { endOfFile = true; i += 1; break }
+    if (line.trimEnd() === EOF) {
+      chunk.endOfFile = true
+      // Blank lines after the marker separate it from the next "@@" or operation.
+      for (i += 1; i < end && all[i].trimEnd() === ''; i += 1);
+      break
+    }
     if (line.startsWith('@@') || isOpHeader(line)) break
     if (line.startsWith('*** ')) throw parseError(i + 1, `unknown marker ${JSON.stringify(line.slice(0, 60))}`)
     const kind = line.charAt(0)
     const body = line.slice(1)
-    if (kind === ' ' || line === '') { oldLines.push(body); newLines.push(body) }
-    else if (kind === '-') { oldLines.push(body); changed = true }
-    else if (kind === '+') { newLines.push(body); changed = true }
+    if (kind === ' ' || line === '') {
+      chunk.context.push([chunk.oldLines.length, chunk.newLines.length])
+      chunk.oldLines.push(body)
+      chunk.newLines.push(body)
+    } else if (kind === '-') { chunk.oldLines.push(body); changed = true }
+    else if (kind === '+') { chunk.newLines.push(body); changed = true }
     else throw parseError(i + 1, `a change line in "${path}" must start with " ", "-" or "+"; got ${JSON.stringify(line.slice(0, 60))}`)
-    i += 1
-  }
-  // Blank lines before the next operation or the end are separators, not context.
-  while (oldLines.length > 0 && newLines.length > 0 && oldLines.at(-1) === '' && newLines.at(-1) === ''
-    && blankRunEndsSection(all, i)) {
-    oldLines.pop()
-    newLines.pop()
+    blankTail = line === '' ? blankTail + 1 : 0
   }
   if (!changed) {
-    if (oldLines.length === 0 && newLines.length === 0 && labels.length === 0 && !endOfFile) return { chunk: null, next: i }
+    if (chunk.oldLines.length === blankTail && labels.length === 0 && !chunk.endOfFile) return { chunk: null, next: i }
     throw parseError(start + 1, `a change in "${path}" has no "-" or "+" lines`)
   }
-  return { chunk: { labels, oldLines, newLines, endOfFile }, next: i }
-}
-
-/** True when the chunk stopped at an operation header or the end, so trailing blank lines are separators. */
-function blankRunEndsSection(all: string[], next: number): boolean {
-  const line = all[next]
-  return line === undefined || isOpHeader(line) || line.trim() === END
+  if (blankTail > 0) chunk.blankTail = blankTail
+  return { chunk, next: i }
 }

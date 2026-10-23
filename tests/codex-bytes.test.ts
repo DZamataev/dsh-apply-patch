@@ -45,10 +45,10 @@ const cases: { name: string; files: Record<string, string>; input: string; expec
     expected: { 'w.txt': 'one\r\nTWO\r\ntwo and a half\r\nthree\r\n' },
   },
   {
-    name: 'a file without a final newline keeps it missing',
+    name: 'an updated file ends with a newline, as with codex-rs',
     files: { 'n.txt': 'a\nb' },
     input: patch('*** Update File: n.txt', '@@', ' a', '-b', '+B'),
-    expected: { 'n.txt': 'a\nB' },
+    expected: { 'n.txt': 'a\nB\n' },
   },
   {
     name: 'unicode text, typographic quotes matched by ASCII ones, emoji in added lines',

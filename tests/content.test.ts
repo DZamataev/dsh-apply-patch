@@ -19,8 +19,8 @@ describe('applyChunks', () => {
     expect(codex(before, '@@ def b():', '-    pass', '+    return 2')).toBe('def a():\n    pass\ndef b():\n    return 2\n')
   })
 
-  it('inserts a pure addition after its label, else at the end, and honours "*** End of File"', () => {
-    expect(codex('a\nb\nc\n', '@@ a', '+x')).toBe('a\nx\nb\nc\n')
+  it('appends a pure Codex addition at the end of the file, also after a label, as codex-rs does', () => {
+    expect(codex('a\nb\nc\n', '@@ a', '+x')).toBe('a\nb\nc\nx\n')
     expect(codex('a\nb\n', '@@', '+z')).toBe('a\nb\nz\n')
     expect(codex('a\nb\n', '@@', '+z', '*** End of File')).toBe('a\nb\nz\n')
   })
@@ -52,18 +52,18 @@ describe('applyChunks', () => {
   it('handles the final newline like git', () => {
     expect(unified('a\nb\nc', '@@ -2,2 +2 @@', ' b', '-c', '\\ No newline at end of file')).toBe('a\nb\n')
     expect(unified('a\nb\n', '@@ -2 +2 @@', '-b', '+B', '\\ No newline at end of file')).toBe('a\nB')
-    expect(codex('a\nb', '@@', '-b', '+B')).toBe('a\nB')
+    expect(codex('a\nb', '@@', '-b', '+B')).toBe('a\nB\n')
   })
 
-  it('keeps the majority line ending', () => {
-    expect(codex('a\r\nb\r\nc\n', '@@', '-b', '+B')).toBe('a\r\nB\r\nc\r\n')
-    expect(codex('a\nb\nc\r\n', '@@', '-b', '+B')).toBe('a\nB\nc\n')
+  it('keeps each untouched line ending and gives new lines the first one of the file', () => {
+    expect(codex('a\r\nb\r\nc\n', '@@', '-b', '+B')).toBe('a\r\nB\r\nc\n')
+    expect(codex('a\nb\nc\r\n', '@@', '-b', '+B')).toBe('a\nB\nc\r\n')
   })
 
   it('applies changes in file order and reports an out-of-order change with the file excerpt', () => {
     const chunks: Chunk[] = [
-      { labels: [], oldLines: ['c'], newLines: ['C'], endOfFile: false },
-      { labels: [], oldLines: ['a'], newLines: ['A'], endOfFile: false },
+      { labels: [], oldLines: ['c'], newLines: ['C'], context: [], endOfFile: false },
+      { labels: [], oldLines: ['a'], newLines: ['A'], context: [], endOfFile: false },
     ]
     expect(() => applyChunks('f', 'a\nb\nc\n', chunks, 'codex')).toThrow(/change 2 of "f".*file order[\s\S]*Expected[\s\S]*"a"/)
   })

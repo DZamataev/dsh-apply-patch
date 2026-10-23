@@ -23,6 +23,16 @@
  * the whole patch succeeded; after a failure, only for the files the undo put
  * back, whose state is then known.
  *
+ * Permission bits: `ctx.fs` creates files with its default mode and has no mode
+ * API, so on POSIX the shell carries them. After writing a move destination, a
+ * constant command copies the source's mode to it; a removal prints the mode
+ * before removing, and the undo of a removal sets it again on the restored
+ * file. Each such step stats the file again and records that version, since a
+ * mode change is a new version; a change by someone else between the chmod and
+ * that stat would be recorded as ours. A mode that could not be carried over
+ * does not fail the patch: it is named in the result, or in the undo notes.
+ * Windows has no POSIX mode; nothing is carried there.
+ *
  * Writes go through `ctx.fs.writeText`. `ctx.fs` cannot delete, so removals run
  * a constant `rm`/`Remove-Item` command through the session's shell with the
  * path in an environment variable and the call's sandbox policy. A removal
@@ -57,7 +67,7 @@ export interface FileChange {
 }
 
 /** A write; `before` is null for a created file, `source` is the move source removed by a later step. */
-interface WriteStep { kind: 'write'; target: FsTarget; path: string; guard: FsWriteIntent; before: string | null; after: string; source?: string }
+interface WriteStep { kind: 'write'; target: FsTarget; path: string; guard: FsWriteIntent; before: string | null; after: string; source?: { path: string; target: FsTarget } }
 /** A removal of the file at `version`; `before` is null for a file that cannot be read as text, which therefore cannot be restored. */
 interface RemoveStep { kind: 'remove'; target: FsTarget; path: string; version: FsVersion; before: string | null }
 type Step = WriteStep | RemoveStep
@@ -69,11 +79,12 @@ export interface PreparedPatch {
   sandboxPolicy: SandboxExecutionPolicy | undefined
 }
 
-interface Done { step: Step; version?: FsVersion }
+/** A step done; `mode` is the POSIX mode of a removed file (`755`), when the removal could read it. */
+interface Done { step: Step; version?: FsVersion; mode?: string }
 
 /** Outcome of a guarded removal. */
 type Removal =
-  | { kind: 'removed' }
+  | { kind: 'removed'; mode?: string }
   /** The file is not the expected version, or is `gone` already; nothing was run. */
   | { kind: 'changed'; gone: boolean }
   /** The file is still there; `code`/`reason` say why. */
@@ -82,7 +93,12 @@ type Removal =
   | { kind: 'unknown'; reason: string }
 
 const SHELL_TIMEOUT_MS = 30_000
-const POSIX_REMOVE = 'rm -f -- "$DSH_APPLY_PATCH_TARGET"'
+const POSIX_MODE_OF = (variable: string) => `{ stat -c %a -- "$${variable}" || stat -f %Lp -- "$${variable}"; } 2>/dev/null`
+/** Prints the mode, then removes; the exit code is that of `rm`. */
+const POSIX_REMOVE = `${POSIX_MODE_OF('DSH_APPLY_PATCH_TARGET')}; rm -f -- "$DSH_APPLY_PATCH_TARGET"`
+const POSIX_COPY_MODE = `m=$(${POSIX_MODE_OF('DSH_APPLY_PATCH_SOURCE')}) && chmod -- "$m" "$DSH_APPLY_PATCH_TARGET"`
+const POSIX_CHMOD = 'chmod -- "$DSH_APPLY_PATCH_MODE" "$DSH_APPLY_PATCH_TARGET"'
+const POSIX = process.platform !== 'win32'
 const PWSH_REMOVE = 'Remove-Item -LiteralPath $env:DSH_APPLY_PATCH_TARGET -Force'
 
 interface WorkingDirectory { ensure(agent: NonNullable<ToolRunContext['agent']>, signal?: AbortSignal): Promise<string> }
@@ -152,7 +168,10 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     if (op.kind === 'delete' || op.moveTo !== undefined) await removable(op.path, target, op.kind === 'delete' ? 'delete' : 'move')
     const guard = await writeGuard(ctx, exec, target, info.version, op.path)
     if (op.kind === 'delete') {
-      const before = await readTextIfText(fs, target, signal)
+      const before = op.chunks === undefined ? await readTextIfText(fs, target, signal) : await fsCall(() => fs.readText(target, signal), op.path)
+      if (op.chunks !== undefined && before !== null && applyChunks(op.path, before, op.chunks, 'unified') !== '') {
+        throw new PatchError('PATCH_CONFLICT', `The diff deletes "${op.path}", but its hunks do not remove the whole file. Read the file again and list every line of it as removed.`)
+      }
       removes.push({ kind: 'remove', target, path: op.path, version: guard.version, before })
       files.push({ path: op.path, action: 'deleted', before, after: null })
       continue
@@ -168,7 +187,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     if (!await absent(op.moveTo, destination)) {
       throw new PatchError('PATCH_CONFLICT', `Cannot move "${op.path}" to "${op.moveTo}": the destination already exists.`)
     }
-    writes.push({ kind: 'write', target: destination, path: op.moveTo, guard: { kind: 'createIfAbsent' }, before: null, after, source: op.path })
+    writes.push({ kind: 'write', target: destination, path: op.moveTo, guard: { kind: 'createIfAbsent' }, before: null, after, source: { path: op.path, target } })
     removes.push({ kind: 'remove', target, path: op.path, version: guard.version, before })
     files.push({ path: op.moveTo, from: op.path, action: 'modified', before, after })
   }
@@ -180,27 +199,35 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
  * @param ctx - plugin context.
  * @param exec - the tool call.
  * @param prepared - the checked patch.
+ * @returns notes on permission bits that could not be carried to a move destination.
  * @throws {@link PatchError} naming the failed step, the files whose undo was incomplete and the files in an unknown state.
  */
-export async function commitPatch(ctx: Context, exec: ToolRunContext, prepared: PreparedPatch): Promise<void> {
+export async function commitPatch(ctx: Context, exec: ToolRunContext, prepared: PreparedPatch): Promise<string[]> {
   const fs = ctx.fs as FileSystem
   const policy = prepared.sandboxPolicy
   const done: Done[] = []
+  const notes: string[] = []
   for (const step of prepared.steps) {
     let failure: PatchError
     let unknown: string | undefined
     if (step.kind === 'write') {
-      try {
-        const outcome = await fs.writeText(step.target, step.after, step.guard, exec.signal, policy)
-        done.push({ step, version: outcome.version })
+      const written = await fs.writeText(step.target, step.after, step.guard, exec.signal, policy)
+        .then(outcome => outcome.version, (error: unknown) => toPatchError(error, step.path, policy))
+      if (!(written instanceof PatchError)) {
+        let version = written
+        if (step.source !== undefined && POSIX) {
+          const run = await runShell(ctx, POSIX_COPY_MODE, { DSH_APPLY_PATCH_SOURCE: fs.processPath(step.source.target), DSH_APPLY_PATCH_TARGET: fs.processPath(step.target) }, exec.signal, policy)
+          if (!run.clean) notes.push(`The permission bits of "${step.source.path}" could not be copied to "${step.path}": ${run.reason}`)
+          version = await statVersion(fs, step.target, version)
+        }
+        done.push({ step, version })
         continue
-      } catch (error: unknown) {
-        failure = toPatchError(error, step.path, policy)
       }
+      failure = written
     } else {
       const removal = await removeGuarded(ctx, step.target, step.version, exec.signal, policy)
       if (removal.kind === 'removed') {
-        done.push({ step })
+        done.push({ step, ...removal.mode === undefined ? {} : { mode: removal.mode } })
         continue
       }
       failure = removal.kind === 'changed'
@@ -225,6 +252,7 @@ export async function commitPatch(ctx: Context, exec: ToolRunContext, prepared: 
   for (const { step, version } of done) {
     observe(ctx, exec, step.target, step.kind === 'write' && version !== undefined ? { kind: 'present', version } : { kind: 'absent' })
   }
+  return notes
 }
 
 /**
@@ -237,10 +265,16 @@ async function rollback(ctx: Context, exec: ToolRunContext, done: readonly Done[
   const fs = ctx.fs as FileSystem
   const notes: string[] = []
   const unrestored = new Set<string>(unknownSource === undefined ? [] : [unknownSource])
-  const restore = async (step: Step, text: string, guard: FsWriteIntent): Promise<boolean> => {
+  /** Write `text` back; `mode` is set again on a restored removed file. */
+  const restore = async (step: Step, text: string, guard: FsWriteIntent, mode?: string): Promise<boolean> => {
     try {
-      const outcome = await fs.writeText(step.target, text, guard, undefined, policy)
-      observe(ctx, exec, step.target, { kind: 'present', version: outcome.version })
+      let version = (await fs.writeText(step.target, text, guard, undefined, policy)).version
+      if (mode !== undefined) {
+        const run = await runShell(ctx, POSIX_CHMOD, { DSH_APPLY_PATCH_MODE: mode, DSH_APPLY_PATCH_TARGET: fs.processPath(step.target) }, undefined, policy)
+        if (!run.clean) notes.push(`"${step.path}" was restored, but not its permission bits ${mode}: ${run.reason}`)
+        version = await statVersion(fs, step.target, version)
+      }
+      observe(ctx, exec, step.target, { kind: 'present', version })
       return true
     } catch (error: unknown) {
       notes.push(guard.kind === 'replaceIfVersion' && (error as { code?: unknown }).code === 'FS_STALE_VERSION'
@@ -249,10 +283,10 @@ async function rollback(ctx: Context, exec: ToolRunContext, done: readonly Done[
       return false
     }
   }
-  for (const { step, version } of [...done].reverse()) {
+  for (const { step, version, mode } of [...done].reverse()) {
     if (step.kind === 'remove') {
       if (step.before === null) notes.push(`"${step.path}" was deleted and cannot be restored: it is not a text file.`)
-      if (step.before === null || !await restore(step, step.before, { kind: 'createIfAbsent' })) unrestored.add(step.path)
+      if (step.before === null || !await restore(step, step.before, { kind: 'createIfAbsent' }, mode)) unrestored.add(step.path)
       continue
     }
     if (version === undefined) continue
@@ -260,7 +294,7 @@ async function rollback(ctx: Context, exec: ToolRunContext, done: readonly Done[
       await restore(step, step.before, { kind: 'replaceIfVersion', version })
       continue
     }
-    if (step.source !== undefined && unrestored.has(step.source)) {
+    if (step.source !== undefined && unrestored.has(step.source.path)) {
       notes.push(`The moved file is kept at "${step.path}".`)
       continue
     }
@@ -328,42 +362,63 @@ async function removeGuarded(ctx: Context, target: FsTarget, version: FsVersion,
   } catch (error: unknown) {
     return { kind: 'kept', code: 'PATCH_IO', reason: `checking the file failed: ${describe(error)}` }
   }
-  const shell = shellOf(ctx)
-  if (shell === undefined) return { kind: 'kept', code: 'PATCH_UNSUPPORTED', reason: 'no shell is available to remove files.' }
-  const request: ShellExecRequest = {
-    command: process.platform === 'win32' ? PWSH_REMOVE : POSIX_REMOVE,
-    env: { DSH_APPLY_PATCH_TARGET: fs.processPath(target) },
-    timeoutMs: SHELL_TIMEOUT_MS,
-    ...signal === undefined ? {} : { signal },
-    ...policy === undefined ? {} : { sandboxPolicy: policy },
-  }
-  let code: PatchErrorCode = 'PATCH_IO'
-  let reason = ''
-  let clean = false
-  try {
-    const result = await (await shell.execute(shell.resolve(request))).result()
-    const tail = result.stderr.text.trim().split('\n').at(-1)?.slice(0, 200) ?? ''
-    if (result.sandbox?.denied === true) {
-      code = 'PATCH_SANDBOX'
-      reason = `[sandbox: file access denied under ${result.sandbox.mode ?? policy?.mode ?? 'unknown'} mode]`
-    } else if (!result.aborted && result.exitCode === 0) {
-      clean = true
-    } else {
-      reason = `${result.aborted ? 'the command was aborted' : `the command exited with code ${result.exitCode ?? 'none'}`}${tail === '' ? '' : `: ${tail}`}`
-    }
-  } catch (error: unknown) {
-    reason = `the command failed: ${describe(error)}`
-  }
+  if (shellOf(ctx) === undefined) return { kind: 'kept', code: 'PATCH_UNSUPPORTED', reason: 'no shell is available to remove files.' }
+  const run = await runShell(ctx, POSIX ? POSIX_REMOVE : PWSH_REMOVE, { DSH_APPLY_PATCH_TARGET: fs.processPath(target) }, signal, policy)
+  const { clean, reason } = run
+  const code: PatchErrorCode = run.denied ? 'PATCH_SANDBOX' : 'PATCH_IO'
   let after: FsInfo | undefined
   try {
     after = await fs.stat(target)
   } catch (error: unknown) {
     return { kind: 'unknown', reason: `${clean ? 'the command succeeded' : reason}; checking the file afterwards failed: ${describe(error)}` }
   }
-  if (after === undefined) return { kind: 'removed' }
+  const mode = /^[0-7]{3,4}$/.exec(run.stdout.trim())?.[0]
+  const removed: Removal = mode === undefined ? { kind: 'removed' } : { kind: 'removed', mode }
+  if (after === undefined) return removed
   if (after.version === version) return { kind: 'kept', code, reason: clean ? 'the file is still there.' : reason }
   // Another file is at the path now: it replaced ours after a successful removal, or during a failed one.
-  return clean ? { kind: 'removed' } : { kind: 'unknown', reason: `${reason}; the file has changed since` }
+  return clean ? removed : { kind: 'unknown', reason: `${reason}; the file has changed since` }
+}
+
+/** Outcome of a constant shell command: `clean` is exit code 0 without abort or sandbox denial; `reason` says why not. */
+interface ShellRun { clean: boolean; denied: boolean; stdout: string; reason: string }
+
+/**
+ * Run a constant command with paths in environment variables and the call's sandbox policy.
+ * @returns the outcome; a missing shell or a throwing command is reported, not thrown.
+ */
+async function runShell(ctx: Context, command: string, env: Record<string, string>, signal: AbortSignal | undefined, policy: SandboxExecutionPolicy | undefined): Promise<ShellRun> {
+  const shell = shellOf(ctx)
+  if (shell === undefined) return { clean: false, denied: false, stdout: '', reason: 'no shell is available.' }
+  const request: ShellExecRequest = {
+    command,
+    env,
+    timeoutMs: SHELL_TIMEOUT_MS,
+    ...signal === undefined ? {} : { signal },
+    ...policy === undefined ? {} : { sandboxPolicy: policy },
+  }
+  try {
+    const result = await (await shell.execute(shell.resolve(request))).result()
+    const tail = result.stderr.text.trim().split('\n').at(-1)?.slice(0, 200) ?? ''
+    if (result.sandbox?.denied === true) {
+      return { clean: false, denied: true, stdout: '', reason: `[sandbox: file access denied under ${result.sandbox.mode ?? policy?.mode ?? 'unknown'} mode]` }
+    }
+    if (!result.aborted && result.exitCode === 0) return { clean: true, denied: false, stdout: result.stdout.text, reason: '' }
+    const why = result.aborted ? 'the command was aborted' : `the command exited with code ${result.exitCode ?? 'none'}`
+    return { clean: false, denied: false, stdout: result.stdout.text, reason: `${why}${tail === '' ? '' : `: ${tail}`}` }
+  } catch (error: unknown) {
+    return { clean: false, denied: false, stdout: '', reason: `the command failed: ${describe(error)}` }
+  }
+}
+
+/** The current version of `target`, or `fallback` when it cannot be read. */
+async function statVersion(fs: FileSystem, target: FsTarget, fallback: FsVersion): Promise<FsVersion> {
+  try {
+    return (await fs.stat(target))?.version ?? fallback
+  } catch {
+    // The stat failed; the version our own write returned is the best one known.
+    return fallback
+  }
 }
 
 function observe(ctx: Context, exec: ToolRunContext, target: FsTarget, observation: FsObservation): void {

@@ -1,12 +1,13 @@
 /**
- * Locating a sequence of lines in a file, after codex-rs `seek_sequence`:
- * exact match first, then ignoring trailing whitespace, then surrounding
- * whitespace, then typographic punctuation (dashes, quotes, odd spaces).
+ * Locating a sequence of lines in a file for Codex patches, after codex-rs
+ * `seek_sequence`: exact match first, then ignoring trailing whitespace, then
+ * surrounding whitespace, then typographic punctuation (dashes, quotes, odd
+ * spaces).
  *
- * An exact match takes the candidate nearest to the hint (the first one at or
- * after the cursor without a hint). The tolerant levels accept only a single
- * candidate: two or more tolerant matches are reported as ambiguous instead of
- * silently editing one of them.
+ * An exact match takes the first candidate at or after the cursor, as
+ * codex-rs does. The tolerant levels accept only a single candidate: where
+ * codex-rs edits the first of several tolerant matches, two or more are
+ * reported as ambiguous instead.
  * @module dsh-apply-patch/apply/seek
  */
 /** Result of a search. */
@@ -24,10 +25,9 @@ export type SeekResult = {
  * @param lines - file lines without line terminators.
  * @param pattern - lines to find; empty matches at `from` (at the end with `endOfFile`).
  * @param from - first index a match may start at.
- * @param options - `endOfFile` pins the match to the end; `hint` prefers the nearest exact candidate.
+ * @param options - `endOfFile` pins the match to the end.
  * @returns the match, no match, or the ambiguous tolerant candidates.
  */
 export declare function seek(lines: readonly string[], pattern: readonly string[], from: number, options?: {
     endOfFile?: boolean;
-    hint?: number;
 }): SeekResult;

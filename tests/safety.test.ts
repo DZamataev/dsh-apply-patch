@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { harness } from './harness.js'
@@ -143,8 +143,9 @@ describe('rollback', () => {
     await h.observe('locked/gone')
     lock(join(h.dir, 'locked'))
     // After the source is removed, something recreates it, so the original text cannot be put back.
+    // Shell command 1 copies the permission bits to the destination, 2 removes the source.
     h.mapShell((result, n) => {
-      if (n === 1) writeFileSync(join(h.dir, 'source'), 'concurrent\n')
+      if (n === 2) writeFileSync(join(h.dir, 'source'), 'concurrent\n')
       return result
     })
     const error = await h.run(patch('*** Update File: source', '*** Move to: destination', '@@', '-original', '+moved', '*** Delete File: locked/gone')).catch((e: Error) => e)
@@ -152,6 +153,22 @@ describe('rollback', () => {
     expect(String(error)).toContain('The moved file is kept at "destination".')
     expect(read(h, 'destination')).toBe('moved\n')
     expect(read(h, 'source')).toBe('concurrent\n')
+  })
+
+  it('restores a deleted file with its permission bits', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'tool.sh'), '#!/bin/sh\necho private\n', { mode: 0o700 })
+    mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/f'), 'f\n')
+    await h.observe('tool.sh')
+    await h.observe('locked/f')
+    lock(join(h.dir, 'locked'))
+    await expect(h.run(patch('*** Delete File: tool.sh', '*** Delete File: locked/f'))).rejects.toThrow('The 1 earlier change(s) of this patch were undone.')
+    expect(read(h, 'tool.sh')).toBe('#!/bin/sh\necho private\n')
+    expect(statSync(join(h.dir, 'tool.sh')).mode & 0o777).toBe(0o700)
+    // The restored file counts as read at its version after the permission change.
+    await h.run(patch('*** Update File: tool.sh', '@@', '-echo private', '+echo public'))
+    expect(read(h, 'tool.sh')).toBe('#!/bin/sh\necho public\n')
   })
 
   it('records restored files as read, so the next patch need not re-read them', async () => {

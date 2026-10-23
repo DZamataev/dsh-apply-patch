@@ -10,14 +10,33 @@ describe('parseUnifiedDiff', () => {
     ].join('\n'))
     expect(parsed.ops).toEqual([{
       kind: 'update', path: 'f.txt',
-      chunks: [{ labels: [], oldLines: ['b', 'c'], newLines: ['b', 'C'], endOfFile: false, oldStart: 2, oldCount: 2, oldNoNewline: true, newNoNewline: true }],
+      chunks: [{ labels: [], oldLines: ['b', 'c'], newLines: ['b', 'C'], context: [[0, 0]], endOfFile: false, oldStart: 2, oldCount: 2, newStart: 2, oldNoNewline: true, newNoNewline: true }],
     }])
   })
 
-  it('tolerates wrong counts, "@@ @@" headers, trailing blank lines and a fence with prose', () => {
-    const parsed = parseUnifiedDiff(['Here is the fix:', '```diff', '--- a/x', '+++ b/x', '@@ -1 +1 @@', ' keep', '-a', '+b', '', '```', '--- y', '+++ y', '@@ @@', '-c', '+d', ''].join('\n'))
-    expect(parsed.ops.map(op => op.kind === 'update' ? [op.path, op.chunks[0].oldLines] : [])).toEqual([['x', ['keep', 'a']], ['y', ['c']]])
+  it('tolerates overstated counts, "@@ @@" headers, trailing blank lines and a fence with prose', () => {
+    const parsed = parseUnifiedDiff(['Here is the fix:', '- a bullet, not a change', '```diff', '--- a/x', '+++ b/x', '@@ -1,5 +1,5 @@', ' keep', '-a', '+b', '', '@@ -9 +9 @@', '-e', '+f', '```', 'Then:', '--- y', '+++ y', '@@ @@', '-c', '+d', ''].join('\n'))
+    expect(parsed.ops.map(op => op.kind === 'update' ? [op.path, op.chunks.map(chunk => chunk.oldLines)] : [])).toEqual([['x', [['keep', 'a'], ['e']]], ['y', [['c']]]])
     expect(detectFormat('```diff\n--- a/x\n+++ b/x\n')).toBe('unified')
+  })
+
+  it('keeps "--- x"/"+++ y" hunk lines in their hunk and later hunks in their file', () => {
+    const parsed = parseUnifiedDiff([
+      'diff --git a/f b/f', '--- a/f', '+++ b/f', '@@ -1,5 +1,5 @@', ' keep', '--- foo', '+++ bar', ' 1', ' 2', ' 3',
+      '@@ -8,5 +8,5 @@ keep', ' 6', ' 7', ' 8', '-old2', '+new2', ' end', '',
+    ].join('\n'))
+    expect(parsed.ops).toHaveLength(1)
+    expect(parsed.ops[0]).toMatchObject({ kind: 'update', path: 'f', chunks: [{ oldLines: ['keep', '-- foo', '1', '2', '3'], newLines: ['keep', '++ bar', '1', '2', '3'] }, { oldStart: 8 }] })
+  })
+
+  it('rejects a hunk whose counts do not match its lines when it swallowed a file header', () => {
+    expect(() => parseUnifiedDiff(['--- a/f', '+++ b/f', '@@ -1,9 +1,9 @@', '-a', '+b', '--- a/g', '+++ b/g', '@@ -1 +1 @@', '-c', '+d'].join('\n')))
+      .toThrow(/line 3: .*counts/)
+  })
+
+  it('carries the hunks of a deletion so they can be checked against the file', () => {
+    const parsed = parseUnifiedDiff(['--- a/f', '+++ /dev/null', '@@ -1 +0,0 @@', '-first'].join('\n'))
+    expect(parsed.ops).toMatchObject([{ kind: 'delete', path: 'f', chunks: [{ oldLines: ['first'], newLines: [] }] }])
   })
 
   it('reads new, deleted and renamed files, including empty ones without hunks', () => {
@@ -39,6 +58,7 @@ describe('parseUnifiedDiff', () => {
 
   it('decodes quoted paths with octal UTF-8 escapes', () => {
     expect(unquote('"a/caf\\303\\251 x.txt"')).toBe('a/café x.txt')
+    expect(unquote('"a/\u{1F4A5}\\t.txt"')).toBe('a/\u{1F4A5}\t.txt')
     const parsed = parseUnifiedDiff(['--- "a/caf\\303\\251"', '+++ "b/caf\\303\\251"', '@@ -1 +1 @@', '-a', '+b'].join('\n'))
     expect(parsed.ops[0].path).toBe('café')
   })
@@ -49,5 +69,13 @@ describe('parseUnifiedDiff', () => {
     ['text without changes', 'just prose', 'no file changes'],
   ])('rejects %s', (_name, text, message) => {
     expect(() => parseUnifiedDiff(text)).toThrow(message)
+  })
+})
+
+describe('detectFormat', () => {
+  it('reads a unified diff whose context contains "*** Begin Patch" as a unified diff', () => {
+    const diff = ['diff --git a/f b/f', '--- a/f', '+++ b/f', '@@ -1,3 +1,3 @@', ' *** Begin Patch', '-old', '+new', ' *** End Patch', ''].join('\n')
+    expect(detectFormat(diff)).toBe('unified')
+    expect(parseUnifiedDiff(diff).ops).toMatchObject([{ kind: 'update', path: 'f' }])
   })
 })

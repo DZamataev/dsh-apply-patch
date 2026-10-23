@@ -15,7 +15,11 @@
  *
  * Text around the markers (a heredoc, a code fence, prose) is ignored: the
  * patch runs from the first `*** Begin Patch` to the last `*** End Patch`.
- * Marker lines are compared after trimming surrounding whitespace.
+ * Those two and the operation headers are compared after trimming surrounding
+ * whitespace; `@@` and `*** End of File` inside an update only after trimming
+ * trailing whitespace, so an indented one is a context line. Two or more `@@`
+ * lines in a row stack labels and a first chunk may omit `@@` (codex-rs rejects
+ * stacked labels).
  * @module dsh-apply-patch/parse/codex
  */
 import type { ParsedPatch } from './types.js';

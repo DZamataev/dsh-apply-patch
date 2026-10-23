@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.2 (2026-10-24)
+
+Codex patches now leave exactly the bytes of codex-rs `apply-patch`, unified diffs exactly those of `git apply`; where that is impossible the patch fails instead of writing a different file. Behaviour changes:
+
+- Codex: context lines keep the file's text (no rewriting of whitespace or punctuation); every untouched line keeps its own line ending and new lines take the file's first one (was: majority rebuild of the whole file); lone CR ends a line; an updated file always ends with a line ending; a change with only `+` lines is appended at the end of the file, also after an `@@` label.
+- Codex parser: a ` ` blank context line before the next operation is kept; unprefixed blank lines are blank context, dropped only when the change matches nowhere with them; `*** End of File` and `@@` count only unindented; `@@ label` keeps its leading indentation; `@@text` without a space is an error; a blank line after `*** End of File` is accepted.
+- Unified: exact matching only (no whitespace or punctuation tolerance); a CR in the diff belongs to its line; `\ No newline at end of file` must agree with the file; git's anchoring and nearest-match tie rule; hunk bodies are read by their counts, so `--- x`/`+++ y` body lines are no longer taken for a file header that could route later hunks to another file; an unprefixed line inside a hunk and more change lines than declared are `PATCH_PARSE` errors (were: the rest of the patch silently skipped); a deletion's hunks must remove the whole file (was: any deletion header deleted the file).
+- Detection: a `*** Begin Patch` context line inside a unified diff no longer makes it a Codex patch.
+- Quoted git paths with characters outside the BMP decode correctly.
+- A moved file keeps its source's permission bits, and a deleted file restored by an undo gets its bits back (POSIX shell `stat`/`chmod`); a failure to do so is named in the result.
+- Tests: 30 byte-exact cases confirmed against the codex-rs sources and `git apply` (`tests/reference-cases.ts`), header-looking hunk lines, partial deletions, permission bits.
+
 ## 1.0.1 (2026-10-24)
 
 - Delete File and the source of Move to require that the session read the file and that it did not change since, like Update File, also in a dry run.

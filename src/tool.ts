@@ -38,7 +38,7 @@ const CODEX_FORMAT = `Edit files with a patch in this format:
 
 - "*** Update File:" may be followed by "*** Move to: new/path" to rename the file.
 - Each change starts with "@@", optionally followed by a line of the file (a class or function header) that comes before the change; repeat "@@ line" to narrow it further. Then list about 3 unchanged lines before and after the change with a leading space, removed lines with "-", added lines with "+".
-- "*** End of File" after a change pins it to the end of the file.
+- "*** End of File" after a change pins it to the end of the file. A change with only "+" lines is added at the end of the file; to insert elsewhere, include an unchanged line before it.
 - Every line of an added file starts with "+".
 - Paths are relative to the working directory, or absolute.
 - Read a file with the read tool before updating, moving or deleting it.
@@ -114,8 +114,8 @@ export function buildApplyPatchTool(ctx: Context, cfg: ResolvedConfig): ToolDefi
       const parsed = format === 'codex' ? parseCodexPatch(text) : parseUnifiedDiff(text)
       const prepared = await preparePatch(ctx, exec, parsed, cfg)
       const applied = args.dry_run !== true
-      if (applied) await commitPatch(ctx, exec, prepared)
-      return result(prepared.files, applied, cfg.maxDiffBytes)
+      const notes = applied ? await commitPatch(ctx, exec, prepared) : []
+      return result(prepared.files, applied, cfg.maxDiffBytes, notes)
     },
     presentCall: (args: { input?: string }) => ({ card: 'generic' as const, title: 'Apply patch', kind: 'other' as const, rawInput: args.input ?? '' }),
     presentResult: (_args, outcome: ToolResult) => {
@@ -126,12 +126,12 @@ export function buildApplyPatchTool(ctx: Context, cfg: ResolvedConfig): ToolDefi
   })
 }
 
-function result(files: readonly FileChange[], applied: boolean, maxDiffBytes: number): ApplyPatchResult {
+function result(files: readonly FileChange[], applied: boolean, maxDiffBytes: number, notes: readonly string[]): ApplyPatchResult {
   const count = (action: FileChange['action']) => files.filter(file => file.action === action).length
   const lead = applied ? 'Applied patch' : 'Dry run, nothing written: the patch applies'
   return {
     applied,
-    summary: `${lead}: ${count('added')} added, ${count('modified')} modified, ${count('deleted')} deleted.`,
+    summary: [`${lead}: ${count('added')} added, ${count('modified')} modified, ${count('deleted')} deleted.`, ...notes.map(note => `Note: ${note}`)].join('\n'),
     files: files.map(file => ({ path: file.path, action: file.action, ...file.from === undefined ? {} : { from: file.from } })),
     diffs: files.map(file => compactDiff(file.path, file.before, file.after, maxDiffBytes)),
   }

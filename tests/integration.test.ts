@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { harness } from './harness.js'
@@ -83,6 +83,45 @@ describe('apply_patch on real DSH services', () => {
     await h.run(patch('*** Update File: sub/n.txt', '@@', '-M', '+MM', '*** Add File: m.txt', '+again'))
     expect(readFileSync(join(h.dir, 'sub/n.txt'), 'utf8')).toBe('MM\n')
     expect(readFileSync(join(h.dir, 'm.txt'), 'utf8')).toBe('again\n')
+  })
+
+  it('deletes a file with a unified diff only when its hunks remove the whole file', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'f'), 'first\nsecond\n')
+    writeFileSync(join(h.dir, 'g'), 'not empty\n')
+    await h.observe('f')
+    await h.observe('g')
+    await expect(h.run(['--- a/f', '+++ /dev/null', '@@ -1 +0,0 @@', '-first', ''].join('\n'))).rejects.toMatchObject({ code: 'PATCH_CONFLICT', message: expect.stringContaining('whole file') })
+    await expect(h.run(['diff --git a/g b/g', 'deleted file mode 100644', 'index 1234567..0000000', ''].join('\n'))).rejects.toMatchObject({ code: 'PATCH_CONFLICT' })
+    expect(readFileSync(join(h.dir, 'f'), 'utf8')).toBe('first\nsecond\n')
+    await h.run(['--- a/f', '+++ /dev/null', '@@ -1,2 +0,0 @@', '-first', '-second', ''].join('\n'))
+    expect(existsSync(join(h.dir, 'f'))).toBe(false)
+  })
+
+  it('moves a file without changes byte for byte and keeps its permission bits', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'mixed'), 'one\r\ntwo\nthree', { mode: 0o700 })
+    writeFileSync(join(h.dir, 'script'), 'echo a\n', { mode: 0o750 })
+    await h.observe('mixed')
+    await h.observe('script')
+    const result = await h.run(patch('*** Update File: mixed', '*** Move to: moved', '*** Update File: script', '*** Move to: bin/script', '@@', '-echo a', '+echo b')) as { summary: string }
+    expect(readFileSync(join(h.dir, 'moved'), 'utf8')).toBe('one\r\ntwo\nthree')
+    expect(statSync(join(h.dir, 'moved')).mode & 0o777).toBe(0o700)
+    expect(statSync(join(h.dir, 'bin/script')).mode & 0o777).toBe(0o750)
+    expect(result.summary).toBe('Applied patch: 0 added, 2 modified, 0 deleted.')
+    // The recorded version includes the permission change, so the moved file can be patched again.
+    await h.run(patch('*** Update File: bin/script', '@@', '-echo b', '+echo c'))
+    expect(readFileSync(join(h.dir, 'bin/script'), 'utf8')).toBe('echo c\n')
+  })
+
+  it('names a move whose permission bits could not be copied', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'src'), 'x\n', { mode: 0o700 })
+    await h.observe('src')
+    h.mapShell((result, n) => n === 1 ? { ...result, exitCode: 1 } : result)
+    const result = await h.run(patch('*** Update File: src', '*** Move to: dest')) as { summary: string }
+    expect(result.summary).toContain('Note: The permission bits of "src" could not be copied to "dest"')
+    expect(readFileSync(join(h.dir, 'dest'), 'utf8')).toBe('x\n')
   })
 
   it('rejects conflicts: existing add target, missing update target, existing move target, the same file twice', async () => {

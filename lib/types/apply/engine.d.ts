@@ -23,6 +23,16 @@
  * the whole patch succeeded; after a failure, only for the files the undo put
  * back, whose state is then known.
  *
+ * Permission bits: `ctx.fs` creates files with its default mode and has no mode
+ * API, so on POSIX the shell carries them. After writing a move destination, a
+ * constant command copies the source's mode to it; a removal prints the mode
+ * before removing, and the undo of a removal sets it again on the restored
+ * file. Each such step stats the file again and records that version, since a
+ * mode change is a new version; a change by someone else between the chmod and
+ * that stat would be recorded as ours. A mode that could not be carried over
+ * does not fail the patch: it is named in the result, or in the undo notes.
+ * Windows has no POSIX mode; nothing is carried there.
+ *
  * Writes go through `ctx.fs.writeText`. `ctx.fs` cannot delete, so removals run
  * a constant `rm`/`Remove-Item` command through the session's shell with the
  * path in an environment variable and the call's sandbox policy. A removal
@@ -56,7 +66,10 @@ interface WriteStep {
     guard: FsWriteIntent;
     before: string | null;
     after: string;
-    source?: string;
+    source?: {
+        path: string;
+        target: FsTarget;
+    };
 }
 /** A removal of the file at `version`; `before` is null for a file that cannot be read as text, which therefore cannot be restored. */
 interface RemoveStep {
@@ -88,7 +101,8 @@ export declare function preparePatch(ctx: Context, exec: ToolRunContext, patch: 
  * @param ctx - plugin context.
  * @param exec - the tool call.
  * @param prepared - the checked patch.
+ * @returns notes on permission bits that could not be carried to a move destination.
  * @throws {@link PatchError} naming the failed step, the files whose undo was incomplete and the files in an unknown state.
  */
-export declare function commitPatch(ctx: Context, exec: ToolRunContext, prepared: PreparedPatch): Promise<void>;
+export declare function commitPatch(ctx: Context, exec: ToolRunContext, prepared: PreparedPatch): Promise<string[]>;
 export {};

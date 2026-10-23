@@ -18,8 +18,8 @@ describe('parseCodexPatch', () => {
       { kind: 'delete', path: 'gone.txt' },
       {
         kind: 'update', path: 'src/x.py', moveTo: 'src/y.py', chunks: [
-          { labels: ['class A', 'def f():'], oldLines: ['    pass'], newLines: ['    return 1'], endOfFile: false },
-          { labels: [], oldLines: ['tail'], newLines: ['tail', 'more'], endOfFile: true },
+          { labels: ['class A', 'def f():'], oldLines: ['    pass'], newLines: ['    return 1'], context: [], endOfFile: false },
+          { labels: [], oldLines: ['tail'], newLines: ['tail', 'more'], context: [[0, 0]], endOfFile: true },
         ],
       },
     ])
@@ -30,9 +30,16 @@ describe('parseCodexPatch', () => {
     expect(parsed.ops[0]).toMatchObject({ chunks: [{ labels: [], oldLines: ['import foo'], newLines: ['import foo', 'bar'] }] })
   })
 
-  it('treats blank lines before the next operation or the end as separators', () => {
-    const parsed = parseCodexPatch(wrap('*** Update File: x', '@@', '-a', '+b', '', '*** Update File: y', '@@', '-c', '+d', ''))
-    expect(parsed.ops.map(op => op.kind === 'update' ? op.chunks[0].oldLines : [])).toEqual([['a'], ['c']])
+  it('keeps unprefixed blank lines as blank context and counts the trailing ones', () => {
+    const parsed = parseCodexPatch(wrap('*** Update File: x', '@@', '-a', '+b', '', '*** Update File: y', '@@', '-c', '+d', ' ', '', '', '*** Update File: z', '@@', '-e', '+f', '*** End of File', '', '@@', '-g', '+h'))
+    expect(parsed.ops.map(op => op.kind === 'update' ? op.chunks.map(chunk => [chunk.oldLines, chunk.blankTail ?? 0]) : [])).toEqual([
+      [[['a', ''], 1]], [[['c', '', '', ''], 2]], [[['e'], 0], [['g'], 0]],
+    ])
+  })
+
+  it('takes "@@ " labels verbatim apart from trailing whitespace and recognizes only unindented markers', () => {
+    const parsed = parseCodexPatch(wrap('*** Update File: x', '@@     def f \t', '-a', '+b', ' *** End of File', '*** End of File \t'))
+    expect(parsed.ops[0]).toMatchObject({ chunks: [{ labels: ['    def f'], oldLines: ['a', '*** End of File'], endOfFile: true }] })
   })
 
   it('ignores a heredoc or fence around the markers and padded marker lines', () => {
@@ -53,6 +60,7 @@ describe('parseCodexPatch', () => {
     ['an add line without "+"', wrap('*** Add File: a', '+x', 'y'), 'must start with "+"'],
     ['an unknown header', wrap('*** Rename File: a'), 'expected "*** Add File: "'],
     ['a second change without "@@"', wrap('*** Update File: x', '@@', '-a', '+b', '*** End of File', '-c', '+d'), 'expected an "@@" line'],
+    ['"@@" glued to a label', wrap('*** Update File: x', '@@def f():', '-a', '+b'), 'write "@@ " and the line'],
   ])('rejects %s', (_name, text, message) => {
     expect(() => parseCodexPatch(text)).toThrow(message)
   })
