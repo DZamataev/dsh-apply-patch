@@ -10,7 +10,7 @@ describe('parseUnifiedDiff', () => {
     ].join('\n'))
     expect(parsed.ops).toEqual([{
       kind: 'update', path: 'f.txt',
-      chunks: [{ labels: [], oldLines: ['b', 'c'], newLines: ['b', 'C'], context: [[0, 0]], endOfFile: false, oldStart: 2, oldCount: 2, newStart: 2, oldNoNewline: true, newNoNewline: true }],
+      chunks: [{ labels: [], oldLines: ['b', 'c'], newLines: ['b', 'C'], context: [[0, 0]], endOfFile: false, oldStart: 2, oldCount: 2, newStart: 2, newCount: 2, oldUnterminated: [1], newUnterminated: [1] }],
     }])
   })
 
@@ -61,6 +61,34 @@ describe('parseUnifiedDiff', () => {
     expect(unquote('"a/\u{1F4A5}\\t.txt"')).toBe('a/\u{1F4A5}\t.txt')
     const parsed = parseUnifiedDiff(['--- "a/caf\\303\\251"', '+++ "b/caf\\303\\251"', '@@ -1 +1 @@', '-a', '+b'].join('\n'))
     expect(parsed.ops[0].path).toBe('café')
+  })
+
+  it('ties a newline marker to the line it follows', () => {
+    const parsed = parseUnifiedDiff(['--- a/f', '+++ b/f', '@@ -1,2 +1,3 @@', ' a', '\\ No newline at end of file', '-b', '+x', '\\ No newline at end of file', '+y'].join('\n'))
+    expect(parsed.ops[0]).toMatchObject({ chunks: [{ oldUnterminated: [0], newUnterminated: [0, 1] }] })
+  })
+
+  // Real `git diff` output: git ends a header path with a TAB when the path ends with a space.
+  it.each([
+    ['a trailing space', 'diff --git a/f  b/f \nindex 3367afd..3e75765 100644\n--- a/f \t\n+++ b/f \t\n@@ -1 +1 @@\n-old\n+new\n', 'f '],
+    ['two trailing spaces', 'diff --git a/f   b/f  \nindex 3367afd..3e75765 100644\n--- a/f  \t\n+++ b/f  \t\n@@ -1 +1 @@\n-old\n+new\n', 'f  '],
+    ['a leading space', 'diff --git a/ f b/ f\nindex 3367afd..3e75765 100644\n--- a/ f\t\n+++ b/ f\t\n@@ -1 +1 @@\n-old\n+new\n', ' f'],
+    ['a quoted tab', 'diff --git "a/f\\t" "b/f\\t"\nindex 3367afd..3e75765 100644\n--- "a/f\\t"\n+++ "b/f\\t"\n@@ -1 +1 @@\n-old\n+new\n', 'f\t'],
+  ])('keeps the exact header path with %s', (_name, diff, path) => {
+    expect(parseUnifiedDiff(diff).ops).toMatchObject([{ kind: 'update', path }])
+  })
+
+  it.each([
+    ['a leading space and a trailing space', 'diff --git a/ f b/g \nsimilarity index 100%\nrename from  f\nrename to g \n', ' f', 'g '],
+    ['a trailing space in the source', 'diff --git a/f  b/g\nsimilarity index 100%\nrename from f \nrename to g\n', 'f ', 'g'],
+    ['a space in a directory', 'diff --git a/y/b z b/q \nsimilarity index 100%\nrename from y/b z\nrename to q \n', 'y/b z', 'q '],
+  ])('keeps the exact rename paths with %s', (_name, diff, path, moveTo) => {
+    expect(parseUnifiedDiff(diff).ops).toEqual([{ kind: 'update', path, moveTo, chunks: [] }])
+  })
+
+  it('splits a "diff --git" line at the space where both names agree', () => {
+    const parsed = parseUnifiedDiff('diff --git a/p b/x b b/p b/x b\nnew file mode 100644\nindex 0000000..e69de29\n')
+    expect(parsed.ops).toEqual([{ kind: 'add', path: 'p b/x b', content: '' }])
   })
 
   it.each([

@@ -28,12 +28,13 @@ export interface Chunk {
     /** Unified hunk header old start (1-based) and count. */
     oldStart?: number;
     oldCount?: number;
-    /** Unified hunk header new start (1-based); git searches from this line. */
+    /** Unified hunk header new start (1-based; git searches from this line) and count. */
     newStart?: number;
-    /** `\ No newline at end of file` after a removed or context line. */
-    oldNoNewline?: boolean;
-    /** `\ No newline at end of file` after an added or context line. */
-    newNoNewline?: boolean;
+    newCount?: number;
+    /** Indices into `oldLines` of lines followed by `\ No newline at end of file`: such a line has no LF. */
+    oldUnterminated?: number[];
+    /** Indices into `newLines` of lines followed by `\ No newline at end of file`: such a line has no LF. */
+    newUnterminated?: number[];
 }
 /** One file operation. */
 export type PatchOp = {

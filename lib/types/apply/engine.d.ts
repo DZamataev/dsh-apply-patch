@@ -24,14 +24,20 @@
  * back, whose state is then known.
  *
  * Permission bits: `ctx.fs` creates files with its default mode and has no mode
- * API, so on POSIX the shell carries them. After writing a move destination, a
- * constant command copies the source's mode to it; a removal prints the mode
- * before removing, and the undo of a removal sets it again on the restored
- * file. Each such step stats the file again and records that version, since a
- * mode change is a new version; a change by someone else between the chmod and
- * that stat would be recorded as ours. A mode that could not be carried over
- * does not fail the patch: it is named in the result, or in the undo notes.
- * Windows has no POSIX mode; nothing is carried there.
+ * API, so on POSIX the shell carries them. While preparing, the mode of every
+ * text file to be deleted or moved is read with a constant `stat` command; a
+ * mode that cannot be read (the command fails or prints something other than
+ * 1–4 octal digits) refuses the patch before anything is written, so an undo
+ * never restores a file with the wrong bits. The removal's version guard covers
+ * the mode, since a mode change is a new version. After writing a move
+ * destination, and after restoring a removed file, a constant `chmod` sets the
+ * mode. A mode change is a new version, so the file is then stat'ed and read
+ * again: only when it still holds the text this patch wrote is that version
+ * taken as ours. Otherwise someone else changed it in between (or it could not
+ * be checked): it is not recorded as read, the undo leaves it as it is, and the
+ * result or the undo notes name it. A failed `chmod` does not fail the patch: it
+ * is named in the result, or in the undo notes. Windows has no POSIX mode;
+ * nothing is carried there.
  *
  * Writes go through `ctx.fs.writeText`. `ctx.fs` cannot delete, so removals run
  * a constant `rm`/`Remove-Item` command through the session's shell with the
@@ -58,7 +64,10 @@ export interface FileChange {
     before: string | null;
     after: string | null;
 }
-/** A write; `before` is null for a created file, `source` is the move source removed by a later step. */
+/**
+ * A write; `before` is null for a created file, `source` is the move source
+ * removed by a later step, `mode` the POSIX mode to set after writing (`755`).
+ */
 interface WriteStep {
     kind: 'write';
     target: FsTarget;
@@ -70,14 +79,20 @@ interface WriteStep {
         path: string;
         target: FsTarget;
     };
+    mode?: string;
 }
-/** A removal of the file at `version`; `before` is null for a file that cannot be read as text, which therefore cannot be restored. */
+/**
+ * A removal of the file at `version`; `before` is null for a file that cannot
+ * be read as text, which therefore cannot be restored; `mode` is its POSIX mode,
+ * set again when an undo restores it.
+ */
 interface RemoveStep {
     kind: 'remove';
     target: FsTarget;
     path: string;
     version: FsVersion;
     before: string | null;
+    mode?: string;
 }
 type Step = WriteStep | RemoveStep;
 /** A checked patch, ready to commit. */
@@ -101,7 +116,7 @@ export declare function preparePatch(ctx: Context, exec: ToolRunContext, patch: 
  * @param ctx - plugin context.
  * @param exec - the tool call.
  * @param prepared - the checked patch.
- * @returns notes on permission bits that could not be carried to a move destination.
+ * @returns notes on permission bits that could not be set on a move destination, and on a destination someone else changed right after it was written.
  * @throws {@link PatchError} naming the failed step, the files whose undo was incomplete and the files in an unknown state.
  */
 export declare function commitPatch(ctx: Context, exec: ToolRunContext, prepared: PreparedPatch): Promise<string[]>;

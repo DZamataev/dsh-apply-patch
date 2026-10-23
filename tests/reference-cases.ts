@@ -1,9 +1,10 @@
 /**
  * Byte-exact expectations for one-file updates. Codex cases were produced by
  * the codex-rs `apply-patch` sources (streaming parser, `compute_replacements`,
- * `seek_sequence`, `text_file`); unified cases by `git apply`. Cases marked
- * `extension` are accepted here but rejected by the reference; `error` cases
- * are rejected by both.
+ * `seek_sequence`, `text_file`); unified cases by plain `git apply` (without
+ * `--unidiff-zero`). Cases marked `extension` are accepted here but rejected by
+ * the reference, cases marked `stricter` are rejected here but accepted by the
+ * reference; other `error` cases are rejected by both.
  */
 
 /** One update of the file `f`. */
@@ -17,8 +18,8 @@ export interface ReferenceCase {
   expected: string | { error: string; code: 'PATCH_PARSE' | 'PATCH_CONFLICT' }
   /** Accepted here although the reference rejects it. */
   extension?: true
-  /** Extra `git apply` options used to confirm a unified case. */
-  gitArgs?: string[]
+  /** Rejected here although the reference accepts it. */
+  stricter?: true
 }
 
 const git = (body: string) => `diff --git a/f b/f\n--- a/f\n+++ b/f\n${body}`
@@ -60,7 +61,7 @@ export const referenceCases: ReferenceCase[] = [
   { name: 'a line without the final newline needs the marker', format: 'unified', before: 'a\nX', patch: git('@@ -1,2 +1,2 @@\n a\n-X\n+Y\n'), expected: { error: 'Could not find', code: 'PATCH_CONFLICT' } },
   {
     name: 'of two places equally far from the header line, the later one wins', format: 'unified',
-    before: 'a\nX\nb\nc\nd\nX\ne\n', patch: git('@@ -4 +4 @@\n-X\n+Y\n'), expected: 'a\nX\nb\nc\nd\nY\ne\n', gitArgs: ['--unidiff-zero'],
+    before: 'a\nk\nX\nk\nm\nk\nX\nk\ne\n', patch: git('@@ -4,3 +4,3 @@\n k\n-X\n+Y\n k\n'), expected: 'a\nk\nX\nk\nm\nk\nY\nk\ne\n',
   },
   {
     name: 'a hunk without trailing context goes to the end of the file', format: 'unified',
@@ -71,4 +72,31 @@ export const referenceCases: ReferenceCase[] = [
     before: 'a\nX\nb\nq\na\nX\nb\n', patch: git('@@ -1,3 +5,3 @@\n a\n-X\n+Y\n b\n'), expected: 'a\nY\nb\nq\na\nX\nb\n',
   },
   { name: 'an overstated count at the end of the diff is accepted', format: 'unified', before: 'old\n', patch: git('@@ -1,9 +1,9 @@\n-old\n+new\n'), expected: 'new\n', extension: true },
+
+  { name: 'Rust trim_end strips NEL, so a line ending in U+0085 matches before a padded line', format: 'codex', before: 'old\u0085\nx\n old \n', patch: '@@\n-old\n+new', expected: 'new\nx\n old \n' },
+  { name: 'Rust trim keeps a BOM, so a line ending in U+FEFF does not match', format: 'codex', before: 'old\uFEFF\nx\n old \n', patch: '@@\n-old\n+new', expected: 'old\uFEFF\nx\nnew\n' },
+  { name: 'an end-of-file change whose only old line is blank inserts at the cursor', format: 'codex', before: 'a\nb\n', patch: '@@\n-\n+new\n*** End of File', expected: 'new\na\nb\n' },
+  { name: 'an end-of-file change whose only old line is blank inserts after its label', format: 'codex', before: 'a\nb\nc\n', patch: '@@ a\n-\n+new\n*** End of File', expected: 'a\nnew\nb\nc\n' },
+  { name: 'blank context and an addition at the end of the file insert at the cursor', format: 'codex', before: 'a\nb\n', patch: '@@\n \n+NEW\n*** End of File', expected: '\nNEW\na\nb\n' },
+
+  { name: 'a hunk at line 1 with leading context must start at the beginning', format: 'unified', before: 'p\np\np\nA\nold\nB\n', patch: git('@@ -1,3 +1,3 @@\n A\n-old\n+new\n B\n'), expected: { error: 'start at the beginning of the file', code: 'PATCH_CONFLICT' } },
+  { name: 'a hunk without trailing context must end at the end of the file', format: 'unified', before: 'q\na\nX\nb\n', patch: git('@@ -2,2 +2,2 @@\n a\n-X\n+Y\n'), expected: { error: 'end at the end of the file', code: 'PATCH_CONFLICT' } },
+  { name: 'a hunk without context away from its header line is refused', format: 'unified', before: 'a\nX\nq\na\nX\n', patch: git('@@ -2,1 +2,1 @@\n-X\n+Y\n'), expected: { error: 'no context lines', code: 'PATCH_CONFLICT' }, stricter: true },
+  { name: 'a hunk without context at the end of the file', format: 'unified', before: 'a\nX\nq\na\nX\n', patch: git('@@ -5,1 +5,1 @@\n-X\n+Y\n'), expected: 'a\nX\nq\na\nY\n' },
+  { name: 'a -U0 insertion inside the file is refused', format: 'unified', before: '1\n2\n3\n', patch: git('@@ -2,0 +3 @@\n+X\n'), expected: { error: 'no context lines', code: 'PATCH_CONFLICT' }, stricter: true },
+  { name: 'a -U0 insertion at the end of the file', format: 'unified', before: '1\n2\n3\n', patch: git('@@ -3,0 +4 @@\n+X\n'), expected: '1\n2\n3\nX\n' },
+  { name: 'a -U0 insertion at line 1 needs an empty file', format: 'unified', before: 'a\nb\nc\n', patch: git('@@ -1,0 +3,1 @@\n+X\n'), expected: { error: 'cover the whole file', code: 'PATCH_CONFLICT' } },
+  { name: 'a -U0 deletion of the last line', format: 'unified', before: 'a\nb\nc\n', patch: git('@@ -3 +2,0 @@\n-c\n'), expected: 'a\nb\n' },
+  { name: 'a -U0 deletion inside the file is refused', format: 'unified', before: 'a\nb\nc\n', patch: git('@@ -2 +1,0 @@\n-b\n'), expected: { error: 'end at the end of the file', code: 'PATCH_CONFLICT' } },
+  { name: 'the newline marker removes the LF of the line it follows', format: 'unified', before: 'old\n', patch: git('@@ -1,1 +1,2 @@\n-old\n+new\n\\ No newline at end of file\n+tail\n'), expected: 'newtail\n' },
+  { name: 'the newline marker after an inner added line joins it to the next', format: 'unified', before: 'a\nb\n', patch: git('@@ -1,2 +1,3 @@\n a\n+x\n\\ No newline at end of file\n b\n'), expected: 'a\nxb\n' },
+  {
+    name: 'a later hunk may apply before an earlier one, nearest to its header line', format: 'unified',
+    before: 'k\nX\nk\nA\nold\nB\nz\nz\nz\nz\nz\nk\nX\nk\nw\n', patch: git('@@ -4,3 +4,3 @@\n A\n-old\n+new\n B\n@@ -2,3 +4,3 @@\n k\n-X\n+Y\n k\n'),
+    expected: 'k\nY\nk\nA\nnew\nB\nz\nz\nz\nz\nz\nk\nX\nk\nw\n',
+  },
+  {
+    name: 'lines of an applied hunk, its context included, are not matched again', format: 'unified',
+    before: 'p\nA\nold\nB\nold2\nC\nz\n', patch: git('@@ -2,3 +2,3 @@\n A\n-old\n+new\n B\n@@ -4,3 +4,3 @@\n B\n-old2\n+new2\n C\n'), expected: { error: 'Could not find', code: 'PATCH_CONFLICT' },
+  },
 ]

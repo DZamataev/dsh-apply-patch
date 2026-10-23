@@ -1,6 +1,7 @@
 /**
- * Applying the chunks of one update to the file's text. Chunks are applied in
- * file order: each is searched at or after the end of the previous one.
+ * Applying the chunks of one update to the file's text. Codex chunks, and
+ * unified hunks without line numbers, are applied in file order: each is
+ * searched at or after the end of the previous one.
  *
  * Codex patches give the bytes of codex-rs (`compute_replacements`,
  * `text_file`): the file is split at LF, CRLF and lone CR; a chunk is found
@@ -11,13 +12,13 @@
  * that matches nowhere is retried without its last blank context line, as in
  * codex-rs, and then without all its trailing unprefixed blank lines.
  *
- * Unified diffs give the bytes of `git apply`: the file is split at LF only, a
- * CR before it belongs to the line, and lines compare exactly together with
- * their LF, so `\ No newline at end of file` must agree with the file. Among
- * the exact matches, git's anchoring applies (a hunk without trailing context
- * ends at the end of the file, one starting at line 1 with context at its
- * start) and then the match nearest to the header's new start, the later one
- * on a tie; when no match satisfies the anchoring, the nearest match is taken.
+ * Unified diffs give the bytes of plain `git apply` (without `--unidiff-zero`):
+ * the file is split at LF only, a CR before it belongs to the line, and lines
+ * compare exactly together with their LF, so `\ No newline at end of file`
+ * must agree with the file. Hunks are applied one after another to the
+ * current text, each placed as git places it (see {@link place}); lines an
+ * earlier hunk produced are not matched again. Unlike Codex chunks, hunks need
+ * not be in file order.
  * @module dsh-apply-patch/apply/content
  */
 import type { Chunk } from '../parse/types.js';

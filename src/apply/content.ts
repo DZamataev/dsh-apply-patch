@@ -1,6 +1,7 @@
 /**
- * Applying the chunks of one update to the file's text. Chunks are applied in
- * file order: each is searched at or after the end of the previous one.
+ * Applying the chunks of one update to the file's text. Codex chunks, and
+ * unified hunks without line numbers, are applied in file order: each is
+ * searched at or after the end of the previous one.
  *
  * Codex patches give the bytes of codex-rs (`compute_replacements`,
  * `text_file`): the file is split at LF, CRLF and lone CR; a chunk is found
@@ -11,13 +12,13 @@
  * that matches nowhere is retried without its last blank context line, as in
  * codex-rs, and then without all its trailing unprefixed blank lines.
  *
- * Unified diffs give the bytes of `git apply`: the file is split at LF only, a
- * CR before it belongs to the line, and lines compare exactly together with
- * their LF, so `\ No newline at end of file` must agree with the file. Among
- * the exact matches, git's anchoring applies (a hunk without trailing context
- * ends at the end of the file, one starting at line 1 with context at its
- * start) and then the match nearest to the header's new start, the later one
- * on a tie; when no match satisfies the anchoring, the nearest match is taken.
+ * Unified diffs give the bytes of plain `git apply` (without `--unidiff-zero`):
+ * the file is split at LF only, a CR before it belongs to the line, and lines
+ * compare exactly together with their LF, so `\ No newline at end of file`
+ * must agree with the file. Hunks are applied one after another to the
+ * current text, each placed as git places it (see {@link place}); lines an
+ * earlier hunk produced are not matched again. Unlike Codex chunks, hunks need
+ * not be in file order.
  * @module dsh-apply-patch/apply/content
  */
 
@@ -111,59 +112,99 @@ function splitAtContext(index: number, old: readonly string[], neu: readonly str
   return out
 }
 
+/** A line of the file image of a unified diff; `patched` lines come from an applied hunk and are not matched again. */
+interface ImageLine extends Line { patched: boolean }
+
 function applyUnified(path: string, before: string, chunks: readonly Chunk[]): string {
-  const lines = split(before, /\n/g)
-  const keys = lines.map(line => line.text + line.eol)
-  const replacements: Replacement[] = []
+  const image: ImageLine[] = split(before, /\n/g).map(line => ({ ...line, patched: false }))
   let cursor = 0
-  let growth = 0
   chunks.forEach((chunk, k) => {
-    const old = side(chunk.oldLines, chunk.oldNoNewline)
-    const neu = side(chunk.newLines, chunk.newNoNewline)
-    const index = old.length === 0
-      // `@@ -N,0 +M @@` inserts after old line N; a header without numbers appends.
-      ? chunk.oldStart === undefined ? lines.length : Math.min(lines.length, Math.max(cursor, chunk.oldStart))
-      : locate(path, lines, keys, chunk, old.map(line => line.text + line.eol), cursor, growth, k)
-    replacements.push({ index, oldLength: old.length, newLines: neu })
-    cursor = index + old.length
-    growth += neu.length - old.length
+    const old = side(chunk.oldLines, chunk.oldUnterminated)
+    const neu = side(chunk.newLines, chunk.newUnterminated)
+    const at = chunk.oldStart === undefined ? placeUnnumbered(path, image, chunk, old, cursor, k) : place(path, image, chunk, old, k)
+    image.splice(at, old.length, ...neu.map(line => ({ ...line, patched: true })))
+    cursor = at + neu.length
   })
-  const out = rebuild(lines, replacements)
-  if (out.slice(0, -1).some(line => line.eol === '')) {
-    throw new PatchError('PATCH_CONFLICT', `The diff for "${path}" leaves a line without a newline before other lines; "\\ No newline at end of file" belongs only to the last line of the file.`)
-  }
-  return out.map(line => line.text + line.eol).join('')
+  return image.map(line => line.text + line.eol).join('')
 }
 
-/** Lines of one side of a hunk; the last lacks its LF after a no-newline marker. */
-function side(texts: readonly string[], noNewline: boolean | undefined): Line[] {
-  return texts.map((text, i) => ({ text, eol: noNewline === true && i === texts.length - 1 ? '' : '\n' }))
+/** Lines of one side of a hunk; a line followed by `\ No newline at end of file` has no LF. */
+function side(texts: readonly string[], unterminated: readonly number[] | undefined): Line[] {
+  return texts.map((text, i) => ({ text, eol: unterminated?.includes(i) === true ? '' : '\n' }))
 }
 
-/** Index of the exact match git would choose for a unified hunk. */
-function locate(path: string, lines: readonly Line[], keys: readonly string[], chunk: Chunk, old: readonly string[], cursor: number, growth: number, k: number): number {
-  const hits: number[] = []
-  for (let i = cursor; i + old.length <= keys.length; i += 1) {
-    if (old.every((key, j) => keys[i + j] === key)) hits.push(i)
+const key = (line: Line) => line.text + line.eol
+
+/** Whether `old` matches the unpatched image lines starting at `at`. */
+function fits(image: readonly ImageLine[], old: readonly Line[], at: number): boolean {
+  return at + old.length <= image.length && old.every((line, j) => !image[at + j].patched && key(image[at + j]) === key(line))
+}
+
+/**
+ * Where plain `git apply` (`apply_one_fragment`, `find_pos`) puts a hunk with
+ * line numbers. A hunk whose header starts at line 0 or 1 must start at the
+ * beginning of the file; a hunk without context after its last change must end
+ * at its end; there is no fallback when that fails. The search starts at the
+ * header's new start and alternates forward and backward, so of two equally
+ * distant places the later one wins. A hunk without any context (`git diff
+ * -U0`) is accepted only where its header points, since git anchors it to the
+ * end of the file regardless.
+ * @throws {@link PatchError} `PATCH_CONFLICT` when git would reject the hunk or would place a context-free hunk elsewhere.
+ */
+function place(path: string, image: readonly ImageLine[], chunk: Chunk, old: readonly Line[], k: number): number {
+  const label = `change ${k + 1} of "${path}"`
+  const trailing = trailingContext(chunk)
+  const atStart = (chunk.oldStart ?? 0) <= 1
+  const atEnd = trailing === 0
+  const ok = (at: number) => (!atStart || at === 0) && (!atEnd || at + old.length === image.length) && fits(image, old, at)
+  const n = image.length
+  let line = atStart ? 0 : atEnd ? n - old.length : Math.max(0, (chunk.newStart ?? 1) - 1)
+  if (line < 0 || line > n) line = n
+  let backward = line
+  let forward = line
+  let at = line
+  for (let i = 0; !ok(at); i += 1) {
+    if (backward === 0 && forward === n) {
+      at = -1
+      break
+    }
+    at = (i % 2 === 1 && backward > 0) || forward === n ? (backward -= 1) : (forward += 1)
   }
-  if (hits.length === 0) throw unifiedMismatch(path, lines, chunk, cursor, k)
-  const context = new Set(chunk.context.map(([o]) => o))
-  let leading = 0
-  while (leading < old.length && context.has(leading)) leading += 1
+  if (at >= 0 && chunk.context.length > 0) return at
+  const advice = 'Include the unchanged lines around each change as context (as git diff does by default), or use the Codex patch format.'
+  if (at >= 0) {
+    const expected = chunk.newCount === 0 ? chunk.newStart ?? 0 : (chunk.newStart ?? 1) - 1
+    if (at === expected) return at
+    throw new PatchError('PATCH_CONFLICT', `The hunk of ${label} has no context lines (like "git diff -U0" output); git apply would place it at line ${at + 1}, not at line ${expected + 1} where its header points. ${advice}`)
+  }
+  const anywhere = image.findIndex((_, i) => fits(image, old, i))
+  if (anywhere < 0) throw unifiedMismatch(path, image, chunk, 0, k, false)
+  const rule = atStart && atEnd ? 'cover the whole file' : atStart ? 'start at the beginning of the file' : 'end at the end of the file'
+  const why = [atStart ? `its header starts at line ${chunk.oldStart ?? 0}` : '', atEnd ? 'it has no context lines after its last change' : ''].filter(Boolean).join(' and ')
+  throw new PatchError('PATCH_CONFLICT', `The lines of ${label} occur at line ${anywhere + 1}, but git apply requires this hunk to ${rule}, because ${why}. ${advice}`)
+}
+
+/** A hunk without line numbers (`@@ @@`, accepted beyond git): the first match after the previous hunk; a pure addition appends. */
+function placeUnnumbered(path: string, image: readonly ImageLine[], chunk: Chunk, old: readonly Line[], cursor: number, k: number): number {
+  if (old.length === 0) return image.length
+  for (let at = cursor; at + old.length <= image.length; at += 1) if (fits(image, old, at)) return at
+  throw unifiedMismatch(path, image, chunk, cursor, k, true)
+}
+
+/** Context lines after the last change, as git counts them. */
+function trailingContext(chunk: Chunk): number {
+  const { context, oldLines, newLines } = chunk
   let trailing = 0
-  while (trailing < old.length && context.has(old.length - 1 - trailing)) trailing += 1
-  // A hunk without any context is read as `-U0` output, which git does not anchor.
-  const counted = chunk.oldStart !== undefined
-  const zero = leading === 0 && trailing === 0
-  const atStart = counted && (chunk.oldStart === 0 || (chunk.oldStart === 1 && !zero))
-  const atEnd = counted && !zero && trailing === 0
-  const anchored = hits.filter(i => (!atStart || i === 0) && (!atEnd || i + old.length === keys.length))
-  const pool = anchored.length > 0 ? anchored : hits
-  const hint = chunk.newStart !== undefined ? Math.max(0, chunk.newStart - 1 - growth) : cursor
-  return pool.reduce((best, i) => Math.abs(i - hint) <= Math.abs(best - hint) ? i : best)
+  while (trailing < context.length) {
+    const [o, n] = context[context.length - 1 - trailing]
+    if (o !== oldLines.length - 1 - trailing || n !== newLines.length - 1 - trailing) break
+    trailing += 1
+  }
+  return trailing
 }
 
-function unifiedMismatch(path: string, lines: readonly Line[], chunk: Chunk, cursor: number, k: number): PatchError {
+/** Mismatch error of a unified hunk; `ordered` hunks (without line numbers) are searched after the previous one. */
+function unifiedMismatch(path: string, lines: readonly Line[], chunk: Chunk, cursor: number, k: number, ordered: boolean): PatchError {
   const bare = (text: string) => text.endsWith('\r') ? text.slice(0, -1) : text
   const loose = seek(lines.map(line => bare(line.text)), chunk.oldLines.map(bare), cursor)
   let advice = ''
@@ -172,9 +213,9 @@ function unifiedMismatch(path: string, lines: readonly Line[], chunk: Chunk, cur
     const crlf = chunk.oldLines.some((text, j) => !text.endsWith('\r') && lines[at + j].text.endsWith('\r'))
     advice = crlf
       ? 'The file has CRLF line endings, but these diff lines do not carry the CR; a unified diff compares line endings like git. Use the Codex patch format, which keeps each line\'s ending.'
-      : 'The lines match only when ignoring whitespace, punctuation or a missing final newline; a unified diff must match the file exactly. Copy the lines exactly, add "\\ No newline at end of file" after a last line without a newline, or use the Codex patch format.'
+      : 'The lines match only when ignoring whitespace, punctuation, a line ending, or lines changed by an earlier hunk; a unified diff must match the file exactly. Copy the lines exactly, add "\\ No newline at end of file" after a last line without a newline, or use the Codex patch format.'
   }
-  return mismatch(`change ${k + 1} of "${path}"`, lines.map(line => line.text), chunk, cursor, k, advice)
+  return mismatch(`change ${k + 1} of "${path}"`, lines.map(line => line.text), chunk, cursor, ordered ? k : 0, advice)
 }
 
 function split(text: string, terminator: RegExp): Line[] {

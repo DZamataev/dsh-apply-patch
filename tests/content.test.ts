@@ -29,16 +29,23 @@ describe('applyChunks', () => {
     expect(codex('x\nend\nx\nend\n', '@@', '-end', '+END', '*** End of File')).toBe('x\nend\nx\nEND\n')
   })
 
-  it('inserts a git -U0 addition after the named old line', () => {
-    expect(unified('1\n2\n3\n', '@@ -2,0 +3 @@', '+X')).toBe('1\n2\nX\n3\n')
-    expect(unified('1\n2\n', '@@ -0,0 +1 @@', '+X')).toBe('X\n1\n2\n')
+  it('refuses a git -U0 hunk that plain git apply would move to the end of the file', () => {
+    expect(() => unified('1\n2\n3\n', '@@ -2,0 +3 @@', '+X')).toThrow(/no context lines.*line 4.*line 3[\s\S]*Codex patch format/)
+    expect(() => unified('1\n2\n', '@@ -0,0 +1 @@', '+X')).toThrow('cover the whole file')
+    expect(unified('', '@@ -0,0 +1 @@', '+X')).toBe('X\n')
+    expect(unified('1\n2\n', '@@ -2,0 +3 @@', '+X')).toBe('1\n2\nX\n')
   })
 
   it('takes the exact match nearest to the hunk header, also before it', () => {
     const lines = Array.from({ length: 60 }, (_, i) => `l${i + 1}`)
     lines[9] = 'dup'; lines[49] = 'dup'
-    const after = unified(`${lines.join('\n')}\n`, '@@ -12,1 +12,1 @@', '-dup', '+DUP').split('\n')
+    const after = unified(`${lines.join('\n')}\n`, '@@ -12,3 +12,3 @@', ' l9', '-dup', '+DUP', ' l11').split('\n')
     expect([after[9], after[49]]).toEqual(['DUP', 'dup'])
+  })
+
+  it('applies a hunk without line numbers at the first match after the previous hunk', () => {
+    expect(unified('x\na\nx\nb\n', '@@ @@', '-x', '+X', '@@ @@', '-x', '+Y')).toBe('X\na\nY\nb\n')
+    expect(unified('a\nb\n', '@@ @@', '+z')).toBe('a\nb\nz\n')
   })
 
   it('rejects a whitespace-tolerant match that fits more than one place', () => {

@@ -118,10 +118,25 @@ describe('apply_patch on real DSH services', () => {
     const h = await open()
     writeFileSync(join(h.dir, 'src'), 'x\n', { mode: 0o700 })
     await h.observe('src')
-    h.mapShell((result, n) => n === 1 ? { ...result, exitCode: 1 } : result)
+    // Shell command 1 reads the permission bits, 2 sets them on the destination.
+    h.mapShell((result, n) => n === 2 ? { ...result, exitCode: 1 } : result)
     const result = await h.run(patch('*** Update File: src', '*** Move to: dest')) as { summary: string }
     expect(result.summary).toContain('Note: The permission bits of "src" could not be copied to "dest"')
     expect(readFileSync(join(h.dir, 'dest'), 'utf8')).toBe('x\n')
+  })
+
+  it('names a move destination someone else rewrote right after its permission bits were set and does not record it as read', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'src'), 'x\n', { mode: 0o700 })
+    await h.observe('src')
+    h.mapShell((result, n) => {
+      if (n === 2) writeFileSync(join(h.dir, 'dest'), 'external work\n')
+      return result
+    })
+    const result = await h.run(patch('*** Update File: src', '*** Move to: dest')) as { summary: string }
+    expect(result.summary).toContain('"dest" changed right after this patch wrote it')
+    expect(readFileSync(join(h.dir, 'dest'), 'utf8')).toBe('external work\n')
+    await expect(h.run(patch('*** Update File: dest', '@@', '-external work', '+mine'))).rejects.toMatchObject({ code: 'PATCH_NOT_OBSERVED' })
   })
 
   it('rejects conflicts: existing add target, missing update target, existing move target, the same file twice', async () => {

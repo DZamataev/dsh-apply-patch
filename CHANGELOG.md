@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.3 (2026-10-24)
+
+- Unified diffs follow plain `git apply` (no `--unidiff-zero`) throughout: a hunk at line 0 or 1 must start at the beginning of the file and a hunk without trailing context must end at its end, with no fallback to another exact match (was: any exact match when the anchoring failed); context-free hunks are anchored too (were read as `-U0` and placed by the header). Hunks are applied one after another to the current text, may come out of file order, and do not match lines an earlier hunk wrote, as in git.
+- A unified hunk without any context lines applies only where git and its header agree (in practice at the end of the file); otherwise it is refused with advice to add context or use the Codex format, instead of writing what git would (the change moved to the end of the file).
+- `\ No newline at end of file` removes the LF of the line it follows (was: of the last line of that side), so git's bytes result also for a marker in the middle of a hunk or of a new file.
+- Unified paths: header paths are kept exactly up to the TAB (trailing and leading spaces were trimmed, so `f ` patched `f`), `rename from`/`rename to` exactly after the prefix, and a `diff --git` line with spaces in its names is split where both names agree.
+- Codex: the tolerant whitespace levels trim Unicode White_Space as Rust does (U+0085 counts, U+FEFF does not); a change left with no old lines after dropping its last blank line is inserted at the search position, also with `*** End of File` (was: appended at the end), as in codex-rs.
+- Permission bits: the mode of a file to be deleted or moved is read while preparing; when it cannot be read the patch is refused before anything is written (was: the file was deleted and an undo restored it with the default mode while reporting a complete undo). After a `chmod` the file's new version is taken as this patch's only if the file still holds the patch's text; otherwise it is not recorded as read, an undo leaves it alone, and it is named (was: a concurrent rewrite right after the `chmod` was adopted and could be deleted by an undo).
+- Tests: 18 new byte-exact reference cases checked against plain `git apply` and the codex-rs sources, exact paths from real `git diff` output, out-of-order and overlapping hunks, unreadable modes, a rewrite right after `chmod`.
+
 ## 1.0.2 (2026-10-24)
 
 Codex patches now leave exactly the bytes of codex-rs `apply-patch`, unified diffs exactly those of `git apply`; where that is impossible the patch fails instead of writing a different file. Behaviour changes:
