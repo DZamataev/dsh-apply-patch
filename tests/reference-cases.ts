@@ -78,6 +78,11 @@ export const referenceCases: ReferenceCase[] = [
   { name: 'an end-of-file change whose only old line is blank inserts at the cursor', format: 'codex', before: 'a\nb\n', patch: '@@\n-\n+new\n*** End of File', expected: 'new\na\nb\n' },
   { name: 'an end-of-file change whose only old line is blank inserts after its label', format: 'codex', before: 'a\nb\nc\n', patch: '@@ a\n-\n+new\n*** End of File', expected: 'a\nnew\nb\nc\n' },
   { name: 'blank context and an addition at the end of the file insert at the cursor', format: 'codex', before: 'a\nb\n', patch: '@@\n \n+NEW\n*** End of File', expected: '\nNEW\na\nb\n' },
+  { name: 'an @@ label keeps a trailing U+FEFF, which Rust does not trim', format: 'codex', before: 'header\nold\nheader\uFEFF\nold\n', patch: '@@ header\uFEFF\n-old\n+new', expected: 'header\nold\nheader\uFEFF\nnew\n' },
+  { name: 'an @@ label loses a trailing U+0085, which Rust trims', format: 'codex', before: 'header\nold\nheader\u0085\nold\n', patch: '@@ header\u0085\n-old\n+new', expected: 'header\nnew\nheader\u0085\nold\n' },
+  { name: '"@@" followed by U+0085 is a bare @@ line', format: 'codex', before: 'a\nold\n', patch: '@@\u0085\n-old\n+new', expected: 'a\nnew\n' },
+  { name: '"*** End of File" followed by U+0085 is the marker', format: 'codex', before: 'a\nold\n', patch: '@@\n-old\n+new\n*** End of File\u0085', expected: 'a\nnew\n' },
+  { name: 'a U+FEFF at the start of the text belongs to the first line', format: 'codex', before: '\uFEFFfirst\nold\nfirst\nold\n', patch: '@@ first\n-old\n+new', expected: '\uFEFFfirst\nold\nfirst\nnew\n' },
 
   { name: 'a hunk at line 1 with leading context must start at the beginning', format: 'unified', before: 'p\np\np\nA\nold\nB\n', patch: git('@@ -1,3 +1,3 @@\n A\n-old\n+new\n B\n'), expected: { error: 'start at the beginning of the file', code: 'PATCH_CONFLICT' } },
   { name: 'a hunk without trailing context must end at the end of the file', format: 'unified', before: 'q\na\nX\nb\n', patch: git('@@ -2,2 +2,2 @@\n a\n-X\n+Y\n'), expected: { error: 'end at the end of the file', code: 'PATCH_CONFLICT' } },

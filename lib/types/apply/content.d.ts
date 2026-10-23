@@ -21,7 +21,18 @@
  * not be in file order.
  * @module dsh-apply-patch/apply/content
  */
+import { PatchError } from '../errors.js';
 import type { Chunk } from '../parse/types.js';
+/**
+ * A chunk that cannot be placed in the file. `referenceRejects` tells whether
+ * codex-rs or `git apply` would refuse it too; it is false for an ambiguous
+ * tolerant Codex match (codex-rs takes the first) and for a context-free
+ * unified hunk away from where git puts it.
+ */
+export declare class PlacementError extends PatchError {
+    readonly referenceRejects: boolean;
+    constructor(message: string, referenceRejects: boolean);
+}
 /**
  * Compute the new text of a file.
  * @param path - the path as written in the patch, for messages.
@@ -32,3 +43,18 @@ import type { Chunk } from '../parse/types.js';
  * @throws {@link PatchError} `PATCH_CONFLICT` when a chunk cannot be located unambiguously.
  */
 export declare function applyChunks(path: string, before: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): string;
+/**
+ * {@link applyChunks} for a whole file text, which starts with U+FEFF when the
+ * file starts with a UTF-8 byte order mark. The mark belongs to the first line,
+ * as for codex-rs and git. When the reference would reject the patch because
+ * of that (typically a change of the first line written without the mark, which
+ * the read tool does not show), the chunks are applied to the text after the
+ * mark and the mark is kept.
+ * @param path - the path as written in the patch, for messages.
+ * @param text - the whole file text.
+ * @param chunks - the chunks in file order.
+ * @param format - the patch format.
+ * @returns the new file text.
+ * @throws {@link PatchError} `PATCH_CONFLICT` as {@link applyChunks}; after a retry without the mark, the retry's error.
+ */
+export declare function applyToFile(path: string, text: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): string;

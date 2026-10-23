@@ -60,7 +60,7 @@ import type { ResolvedConfig } from '../config.js'
 import { PatchError } from '../errors.js'
 import type { PatchErrorCode } from '../errors.js'
 import type { ParsedPatch } from '../parse/types.js'
-import { applyChunks } from './content.js'
+import { applyToFile } from './content.js'
 
 /** One file in the result. */
 export interface FileChange {
@@ -184,8 +184,8 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     if (op.kind === 'delete' || op.moveTo !== undefined) await removable(op.path, target, op.kind === 'delete' ? 'delete' : 'move')
     const guard = await writeGuard(ctx, exec, target, info.version, op.path)
     if (op.kind === 'delete') {
-      const before = op.chunks === undefined ? await readTextIfText(fs, target, signal) : await fsCall(() => fs.readText(target, signal), op.path)
-      if (op.chunks !== undefined && before !== null && applyChunks(op.path, before, op.chunks, 'unified') !== '') {
+      const before = op.chunks === undefined ? await readTextIfText(fs, target, signal) : await fsCall(() => readWhole(fs, target, signal), op.path)
+      if (op.chunks !== undefined && before !== null && !['', BOM].includes(applyToFile(op.path, before, op.chunks, 'unified'))) {
         throw new PatchError('PATCH_CONFLICT', `The diff deletes "${op.path}", but its hunks do not remove the whole file. Read the file again and list every line of it as removed.`)
       }
       const mode = before === null ? undefined : await modeOf(ctx, target, op.path, signal, sandboxPolicy)
@@ -193,8 +193,8 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
       files.push({ path: op.path, action: 'deleted', before, after: null })
       continue
     }
-    const before = await fsCall(() => fs.readText(target, signal), op.path)
-    const after = op.chunks.length === 0 ? before : applyChunks(op.path, before, op.chunks, patch.format)
+    const before = await fsCall(() => readWhole(fs, target, signal), op.path)
+    const after = op.chunks.length === 0 ? before : applyToFile(op.path, before, op.chunks, patch.format)
     if (op.moveTo === undefined) {
       if (after !== before) writes.push({ kind: 'write', target, path: op.path, guard, before, after })
       files.push({ path: op.path, action: 'modified', before, after })
@@ -462,7 +462,7 @@ async function setMode(ctx: Context, target: FsTarget, mode: string, text: strin
   try {
     // Stat before reading: a write in between makes the text differ, never a foreign version look like ours.
     const info = await fs.stat(target)
-    if (info !== undefined && await fs.readText(target) === text) return { version: info.version, ...reason }
+    if (info !== undefined && await readWhole(fs, target, undefined) === text) return { version: info.version, ...reason }
   } catch {
     // The file cannot be checked; it is not taken as ours.
   }
@@ -495,9 +495,22 @@ function foldKey(key: string): string {
   return process.platform === 'darwin' || process.platform === 'win32' ? key.normalize('NFC').toLowerCase() : key
 }
 
+const BOM = '\uFEFF'
+
+/**
+ * The whole text of a file, starting with U+FEFF when the file starts with a
+ * UTF-8 byte order mark: `readText` drops the mark, and writing this text back
+ * with `writeText` gives the same bytes.
+ */
+async function readWhole(fs: FileSystem, target: FsTarget, signal: AbortSignal | undefined): Promise<string> {
+  const text = await fs.readText(target, signal)
+  const head = await fs.readByteRange(target, { offset: 0, length: 3 }, signal)
+  return head.length === 3 && head[0] === 0xEF && head[1] === 0xBB && head[2] === 0xBF ? BOM + text : text
+}
+
 async function readTextIfText(fs: FileSystem, target: FsTarget, signal: AbortSignal): Promise<string | null> {
   try {
-    return await fs.readText(target, signal)
+    return await readWhole(fs, target, signal)
   } catch {
     // A binary or unreadable file is still removable; it just cannot be restored.
     return null

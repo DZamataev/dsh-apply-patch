@@ -42,6 +42,21 @@ describe('parseCodexPatch', () => {
     expect(parsed.ops[0]).toMatchObject({ chunks: [{ labels: ['    def f'], oldLines: ['a', '*** End of File'], endOfFile: true }] })
   })
 
+  it('trims markers, labels and paths as Rust does: U+0085 is whitespace, U+FEFF is not', () => {
+    const parsed = parseCodexPatch(['\u0085*** Begin Patch\u0085', '*** Add File: a\uFEFF', '+x', '*** Delete File: b\u0085 ', '*** Update File: c', '*** Move to: d\u0085', '@@ label\uFEFF\u0085', '-a', '+b', '*** End of File\u0085', '\u0085', '*** End Patch\u0085'].join('\n'))
+    expect(parsed.ops).toEqual([
+      { kind: 'add', path: 'a\uFEFF', content: 'x\n' },
+      { kind: 'delete', path: 'b' },
+      { kind: 'update', path: 'c', moveTo: 'd', chunks: [{ labels: ['label\uFEFF'], oldLines: ['a'], newLines: ['b'], context: [], endOfFile: true }] },
+    ])
+    expect(() => parseCodexPatch('\uFEFF*** Begin Patch\n*** Add File: a\n+x\n*** End Patch')).toThrow('must start with "*** Begin Patch"')
+    expect(detectFormat('\u0085*** Begin Patch\u0085\n')).toBe('codex')
+  })
+
+  it('keeps the whitespace between an operation marker and its path as part of the path, as codex-rs does', () => {
+    expect(parseCodexPatch(wrap('*** Add File:  spaced', '+x')).ops).toEqual([{ kind: 'add', path: ' spaced', content: 'x\n' }])
+  })
+
   it('ignores a heredoc or fence around the markers and padded marker lines', () => {
     const text = `apply_patch <<'EOF'\n*** Begin Patch \n*** Add File: n.txt\n+x\n  *** End Patch\nEOF`
     expect(parseCodexPatch(text).ops).toEqual([{ kind: 'add', path: 'n.txt', content: 'x\n' }])

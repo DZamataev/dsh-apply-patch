@@ -12,6 +12,8 @@
  * @module dsh-apply-patch/apply/seek
  */
 
+import { rustTrim, rustTrimEnd } from '../parse/whitespace.js'
+
 /** Result of a search. */
 export type SeekResult =
   | { kind: 'found'; index: number }
@@ -26,27 +28,11 @@ const PUNCTUATION: Record<string, string> = {
   '\u2008': ' ', '\u2009': ' ', '\u200A': ' ', '\u202F': ' ', '\u205F': ' ', '\u3000': ' ',
 }
 
-/** Unicode White_Space, the characters Rust `str::trim` strips; all are single UTF-16 units. */
-const WHITE_SPACE = new Set('\t\n\v\f\r \u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000')
-
-function trimEnd(line: string): string {
-  let end = line.length
-  while (end > 0 && WHITE_SPACE.has(line[end - 1])) end -= 1
-  return line.slice(0, end)
-}
-
-function trim(line: string): string {
-  const rest = trimEnd(line)
-  let start = 0
-  while (start < rest.length && WHITE_SPACE.has(rest[start])) start += 1
-  return rest.slice(start)
-}
-
 const LEVELS: ((line: string) => string)[] = [
   line => line,
-  trimEnd,
-  trim,
-  line => Array.from(trim(line), ch => PUNCTUATION[ch] ?? ch).join(''),
+  rustTrimEnd,
+  rustTrim,
+  line => Array.from(rustTrim(line), ch => PUNCTUATION[ch] ?? ch).join(''),
 ]
 
 /**

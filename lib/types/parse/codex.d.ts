@@ -15,9 +15,12 @@
  *
  * Text around the markers (a heredoc, a code fence, prose) is ignored: the
  * patch runs from the first `*** Begin Patch` to the last `*** End Patch`.
- * Those two and the operation headers are compared after trimming surrounding
- * whitespace; `@@` and `*** End of File` inside an update only after trimming
- * trailing whitespace, so an indented one is a context line. Two or more `@@`
+ * Those two are compared after trimming surrounding whitespace; operation
+ * headers must be unindented and their path is the rest of the line without
+ * trailing whitespace (whitespace after the marker's space belongs to the path,
+ * as in codex-rs); `@@` and `*** End of File` inside an update are compared
+ * after trimming trailing whitespace, so an indented one is a context line.
+ * Whitespace is Rust's (see {@link rustTrim}). Two or more `@@`
  * lines in a row stack labels and a first chunk may omit `@@` (codex-rs rejects
  * stacked labels).
  * @module dsh-apply-patch/parse/codex

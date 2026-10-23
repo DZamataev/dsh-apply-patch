@@ -15,15 +15,19 @@
  *
  * Text around the markers (a heredoc, a code fence, prose) is ignored: the
  * patch runs from the first `*** Begin Patch` to the last `*** End Patch`.
- * Those two and the operation headers are compared after trimming surrounding
- * whitespace; `@@` and `*** End of File` inside an update only after trimming
- * trailing whitespace, so an indented one is a context line. Two or more `@@`
+ * Those two are compared after trimming surrounding whitespace; operation
+ * headers must be unindented and their path is the rest of the line without
+ * trailing whitespace (whitespace after the marker's space belongs to the path,
+ * as in codex-rs); `@@` and `*** End of File` inside an update are compared
+ * after trimming trailing whitespace, so an indented one is a context line.
+ * Whitespace is Rust's (see {@link rustTrim}). Two or more `@@`
  * lines in a row stack labels and a first chunk may omit `@@` (codex-rs rejects
  * stacked labels).
  * @module dsh-apply-patch/parse/codex
  */
 
 import { parseError } from '../errors.js'
+import { rustTrim, rustTrimEnd } from './whitespace.js'
 import type { Chunk, ParsedPatch, PatchOp } from './types.js'
 
 const BEGIN = '*** Begin Patch'
@@ -42,9 +46,9 @@ const EOF = '*** End of File'
  */
 export function parseCodexPatch(text: string): ParsedPatch {
   const all = text.replaceAll('\r\n', '\n').split('\n')
-  const begin = all.findIndex(line => line.trim() === BEGIN)
+  const begin = all.findIndex(line => rustTrim(line) === BEGIN)
   let end = -1
-  for (let i = all.length - 1; i > begin; i -= 1) if (all[i].trim() === END) { end = i; break }
+  for (let i = all.length - 1; i > begin; i -= 1) if (rustTrim(all[i]) === END) { end = i; break }
   if (begin < 0) throw parseError(0, `the patch must start with "${BEGIN}"`)
   if (end < 0) throw parseError(0, `the patch must end with "${END}"`)
 
@@ -53,14 +57,14 @@ export function parseCodexPatch(text: string): ParsedPatch {
   const lineNo = (index: number) => index + 1
   while (i < end) {
     const line = all[i]
-    const marker = line.trim()
+    const marker = rustTrim(line)
     if (marker === '') { i += 1; continue }
     if (line.startsWith(ADD)) {
       const path = requirePath(line.slice(ADD.length), lineNo(i), ADD)
       const content: string[] = []
       i += 1
       while (i < end && all[i].startsWith('+')) { content.push(all[i].slice(1)); i += 1 }
-      if (i < end && !isOpHeader(all[i]) && all[i].trim() !== '') {
+      if (i < end && !isOpHeader(all[i]) && rustTrim(all[i]) !== '') {
         throw parseError(lineNo(i), `every content line of "${path}" must start with "+"; got ${JSON.stringify(all[i].slice(0, 60))}`)
       }
       ops.push({ kind: 'add', path, content: content.length === 0 ? '' : `${content.join('\n')}\n` })
@@ -97,7 +101,7 @@ export function parseCodexPatch(text: string): ParsedPatch {
 }
 
 function requirePath(raw: string, lineNo: number, header: string): string {
-  const path = raw.trim()
+  const path = rustTrimEnd(raw)
   if (path === '') throw parseError(lineNo, `"${header.trim()}" needs a file path`)
   return path
 }
@@ -116,8 +120,8 @@ function isOpHeader(line: string): boolean {
 function parseChunk(all: string[], start: number, end: number, path: string, first: boolean): { chunk: Chunk | null; next: number } {
   let i = start
   const labels: string[] = []
-  for (; i < end && (all[i].trimEnd() === '@@' || all[i].startsWith('@@ ')); i += 1) {
-    const label = all[i].trimEnd().slice(3)
+  for (; i < end && (rustTrimEnd(all[i]) === '@@' || all[i].startsWith('@@ ')); i += 1) {
+    const label = rustTrimEnd(all[i]).slice(3)
     if (label !== '') labels.push(label)
   }
   if (i < end && all[i].startsWith('@@')) {
@@ -131,10 +135,10 @@ function parseChunk(all: string[], start: number, end: number, path: string, fir
   let blankTail = 0
   for (; i < end; i += 1) {
     const line = all[i]
-    if (line.trimEnd() === EOF) {
+    if (rustTrimEnd(line) === EOF) {
       chunk.endOfFile = true
       // Blank lines after the marker separate it from the next "@@" or operation.
-      for (i += 1; i < end && all[i].trimEnd() === ''; i += 1);
+      for (i += 1; i < end && rustTrimEnd(all[i]) === ''; i += 1);
       break
     }
     if (line.startsWith('@@') || isOpHeader(line)) break

@@ -4,6 +4,7 @@
  */
 
 import { unrecognizedError } from './errors.js'
+import { rustTrim } from './parse/whitespace.js'
 
 /** Accepted patch formats. */
 export type PatchFormat = 'unified' | 'codex'
@@ -22,7 +23,7 @@ export function detectFormat(text: string): PatchFormat {
   const lines = text.replaceAll('\r\n', '\n').split('\n')
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]
-    if (line.trim() === '*** Begin Patch') return 'codex'
+    if (rustTrim(line) === '*** Begin Patch') return 'codex'
     if (line.startsWith('diff --git ') || /^@@ -\d+/.test(line)) return 'unified'
     if (line.startsWith('--- ') && lines[i + 1]?.startsWith('+++ ')) return 'unified'
   }

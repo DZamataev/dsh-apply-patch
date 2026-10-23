@@ -27,6 +27,18 @@ import type { Chunk } from '../parse/types.js'
 import { seek } from './seek.js'
 import type { SeekResult } from './seek.js'
 
+/**
+ * A chunk that cannot be placed in the file. `referenceRejects` tells whether
+ * codex-rs or `git apply` would refuse it too; it is false for an ambiguous
+ * tolerant Codex match (codex-rs takes the first) and for a context-free
+ * unified hunk away from where git puts it.
+ */
+export class PlacementError extends PatchError {
+  constructor(message: string, readonly referenceRejects: boolean) {
+    super('PATCH_CONFLICT', message)
+  }
+}
+
 /** A file line and its terminator (`''` for an unterminated last line). */
 interface Line { text: string; eol: string }
 interface Replacement { index: number; oldLength: number; newLines: Line[] }
@@ -44,6 +56,31 @@ export function applyChunks(path: string, before: string, chunks: readonly Chunk
   return format === 'codex' ? applyCodex(path, before, chunks) : applyUnified(path, before, chunks)
 }
 
+const BOM = '\uFEFF'
+
+/**
+ * {@link applyChunks} for a whole file text, which starts with U+FEFF when the
+ * file starts with a UTF-8 byte order mark. The mark belongs to the first line,
+ * as for codex-rs and git. When the reference would reject the patch because
+ * of that (typically a change of the first line written without the mark, which
+ * the read tool does not show), the chunks are applied to the text after the
+ * mark and the mark is kept.
+ * @param path - the path as written in the patch, for messages.
+ * @param text - the whole file text.
+ * @param chunks - the chunks in file order.
+ * @param format - the patch format.
+ * @returns the new file text.
+ * @throws {@link PatchError} `PATCH_CONFLICT` as {@link applyChunks}; after a retry without the mark, the retry's error.
+ */
+export function applyToFile(path: string, text: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): string {
+  try {
+    return applyChunks(path, text, chunks, format)
+  } catch (error: unknown) {
+    if (!text.startsWith(BOM) || !(error instanceof PlacementError) || !error.referenceRejects) throw error
+    return BOM + applyChunks(path, text.slice(1), chunks, format)
+  }
+}
+
 function applyCodex(path: string, before: string, chunks: readonly Chunk[]): string {
   const lines = split(before, /\r\n|\r|\n/g)
   const eol = lines.find(line => line.eol !== '')?.eol ?? '\n'
@@ -56,7 +93,7 @@ function applyCodex(path: string, before: string, chunks: readonly Chunk[]): str
     for (const text of chunk.labels) {
       const found = seek(texts, [text], cursor)
       if (found.kind === 'none') {
-        throw new PatchError('PATCH_CONFLICT', `Could not find the "@@ ${text}" line of ${label} at or after line ${cursor + 1}. ${orderNote(k)}`.trimEnd())
+        throw new PlacementError(`Could not find the "@@ ${text}" line of ${label} at or after line ${cursor + 1}. ${orderNote(k)}`.trimEnd(), true)
       }
       cursor = (found.kind === 'found' ? found.index : found.indices[0]) + 1
     }
@@ -71,7 +108,7 @@ function applyCodex(path: string, before: string, chunks: readonly Chunk[]): str
       if (found.kind !== 'none') { variant = candidate; break }
     }
     if (found.kind === 'ambiguous') {
-      throw new PatchError('PATCH_CONFLICT', `The lines of ${label} match ${found.indices.length} places only after ignoring whitespace or punctuation (lines ${found.indices.slice(0, 5).map(i => i + 1).join(', ')}). Copy the lines exactly as they are in the file, or add more context lines.`)
+      throw new PlacementError(`The lines of ${label} match ${found.indices.length} places only after ignoring whitespace or punctuation (lines ${found.indices.slice(0, 5).map(i => i + 1).join(', ')}). Copy the lines exactly as they are in the file, or add more context lines.`, false)
     }
     if (found.kind === 'none') throw mismatch(label, texts, chunk, cursor, k, '')
     replacements.push(...splitAtContext(found.index, variant.old, variant.neu, chunk.context, fresh))
@@ -175,13 +212,13 @@ function place(path: string, image: readonly ImageLine[], chunk: Chunk, old: rea
   if (at >= 0) {
     const expected = chunk.newCount === 0 ? chunk.newStart ?? 0 : (chunk.newStart ?? 1) - 1
     if (at === expected) return at
-    throw new PatchError('PATCH_CONFLICT', `The hunk of ${label} has no context lines (like "git diff -U0" output); git apply would place it at line ${at + 1}, not at line ${expected + 1} where its header points. ${advice}`)
+    throw new PlacementError(`The hunk of ${label} has no context lines (like "git diff -U0" output); git apply would place it at line ${at + 1}, not at line ${expected + 1} where its header points. ${advice}`, false)
   }
   const anywhere = image.findIndex((_, i) => fits(image, old, i))
   if (anywhere < 0) throw unifiedMismatch(path, image, chunk, 0, k, false)
   const rule = atStart && atEnd ? 'cover the whole file' : atStart ? 'start at the beginning of the file' : 'end at the end of the file'
   const why = [atStart ? `its header starts at line ${chunk.oldStart ?? 0}` : '', atEnd ? 'it has no context lines after its last change' : ''].filter(Boolean).join(' and ')
-  throw new PatchError('PATCH_CONFLICT', `The lines of ${label} occur at line ${anywhere + 1}, but git apply requires this hunk to ${rule}, because ${why}. ${advice}`)
+  throw new PlacementError(`The lines of ${label} occur at line ${anywhere + 1}, but git apply requires this hunk to ${rule}, because ${why}. ${advice}`, true)
 }
 
 /** A hunk without line numbers (`@@ @@`, accepted beyond git): the first match after the previous hunk; a pure addition appends. */
@@ -204,7 +241,7 @@ function trailingContext(chunk: Chunk): number {
 }
 
 /** Mismatch error of a unified hunk; `ordered` hunks (without line numbers) are searched after the previous one. */
-function unifiedMismatch(path: string, lines: readonly Line[], chunk: Chunk, cursor: number, k: number, ordered: boolean): PatchError {
+function unifiedMismatch(path: string, lines: readonly Line[], chunk: Chunk, cursor: number, k: number, ordered: boolean): PlacementError {
   const bare = (text: string) => text.endsWith('\r') ? text.slice(0, -1) : text
   const loose = seek(lines.map(line => bare(line.text)), chunk.oldLines.map(bare), cursor)
   let advice = ''
@@ -246,7 +283,7 @@ function orderNote(k: number): string {
 }
 
 /** Context-mismatch error: the expected lines and the file near the most likely place. */
-function mismatch(label: string, lines: readonly string[], chunk: Chunk, cursor: number, k: number, advice: string): PatchError {
+function mismatch(label: string, lines: readonly string[], chunk: Chunk, cursor: number, k: number, advice: string): PlacementError {
   const oldLines = chunk.oldLines
   const anchor = oldLines.find(line => line.trim() !== '')
   let near = chunk.oldStart === undefined ? cursor : Math.max(cursor, chunk.oldStart - 1)
@@ -256,7 +293,7 @@ function mismatch(label: string, lines: readonly string[], chunk: Chunk, cursor:
   }
   const from = Math.max(0, near - 2)
   const excerpt = lines.slice(from, from + Math.min(12, oldLines.length + 4)).map((line, i) => `${from + i + 1}: ${quote(line)}`)
-  return new PatchError('PATCH_CONFLICT', [
+  return new PlacementError([
     `Could not find the lines of ${label} at or after line ${cursor + 1}${chunk.endOfFile ? ' at the end of the file' : ''}. ${orderNote(k)}`.trimEnd(),
     'Expected (context and removed lines):',
     ...oldLines.slice(0, 12).map(quote),
@@ -264,5 +301,5 @@ function mismatch(label: string, lines: readonly string[], chunk: Chunk, cursor:
     excerpt.length > 0 ? `The file near line ${near + 1}:` : 'The file has no lines there.',
     ...excerpt,
     advice === '' ? 'Read the file again and rebuild the change from its current lines.' : advice,
-  ].filter(line => line !== '').join('\n'))
+  ].filter(line => line !== '').join('\n'), true)
 }
