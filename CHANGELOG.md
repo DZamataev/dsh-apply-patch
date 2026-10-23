@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.0 (2026-10-24)
+
+Delete File and Move to change semantics: files are relinked instead of rewritten and removed, and no permission bits are read or set any more.
+
+- Move to relinks the source to the destination with one constant `sh` command (`ln`, which never replaces an existing name, then `rm` of the old name only while `[ old -ef new ]` holds; missing parent directories are created with `mkdir -p`). The moved file keeps its inode, bytes (a UTF-8 byte order mark included) and full mode, setuid, setgid and sticky included (were: the text was rewritten at the destination and the mode copied with `stat`/`chmod`, which dropped the special bits on BSD and lost the mark). With changes, the new text is written to the destination afterwards, guarded by the version the move left. The destination is taken as this patch's only when a stat, a read and a second stat agree it holds the source's text.
+- Delete File relinks the file into a private staging directory next to it (`.dsh-apply-patch-trash-<random>`, mode 700), removed after the whole patch succeeded. An undo relinks it back, so a deleted file, binary included, is restored byte for byte with its mode and inode (was: text files rewritten with the default mode plus `chmod`, binary files lost).
+- Undoing an added file stages it the same way and removes the staging afterwards (was: `rm`); undoing a move relinks the destination back. When a name was taken again or a file changed meanwhile, the other file is left as it is and this patch's copy is kept and named; an undo step reports success only when the file put back was verified (was: a restore whose result could not be verified counted as done, so a move destination, the only copy, could be removed).
+- Without a POSIX shell (none mounted, or Windows), Delete File, Move to, and Add File together with other operations are refused with `PATCH_UNSUPPORTED` (Windows used PowerShell `Remove-Item`).
+- In `workspace-write` mode a move destination and every staging path must be inside the workspace or the temp directories too.
+- Update keeps a UTF-8 byte order mark, also when an undo restores the text (`readText` drops it, so it was lost). The mark belongs to the first line when matching, as in codex-rs and git; where the reference would refuse a change because of it, the change is applied after the mark.
+- Codex: every trim of markers, `@@` labels, `*** End of File` and paths uses Rust's whitespace (U+0085 is whitespace, U+FEFF is not); `@@ label` used JavaScript's `trimEnd`, so a label ending in U+FEFF matched an earlier line and the wrong occurrence was edited. An operation's path keeps whitespace after the marker's space, as in codex-rs (`*** Add File:  x` names ` x`; was trimmed).
+- README: threat model, staging, hard-link requirements.
+- Tests: setuid and sticky bits, inodes and BOM bytes through moves and undone deletions, binary restore, staging cleanup, a destination created after the check, a file replaced while it is being staged, names taken again before an undo, Rust whitespace in markers, labels and paths.
+
 ## 1.0.3 (2026-10-24)
 
 - Unified diffs follow plain `git apply` (no `--unidiff-zero`) throughout: a hunk at line 0 or 1 must start at the beginning of the file and a hunk without trailing context must end at its end, with no fallback to another exact match (was: any exact match when the anchoring failed); context-free hunks are anchored too (were read as `-U0` and placed by the header). Hunks are applied one after another to the current text, may come out of file order, and do not match lines an earlier hunk wrote, as in git.
