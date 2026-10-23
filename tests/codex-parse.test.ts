@@ -1,103 +1,59 @@
 import { describe, expect, it } from 'vitest'
 import { parseCodexPatch } from '../src/parse/codex.js'
-import { PatchError } from '../src/errors.js'
+import { detectFormat } from '../src/detect.js'
 
-describe('codex parser', () => {
-  it('parses Add / Update (multi-hunk) / Delete in one patch', () => {
-    const parsed = parseCodexPatch([
-      '*** Begin Patch',
-      '*** Add File: new.txt',
-      '+created',
-      '*** Update File: edit.txt',
-      '@@ marker label',
-      ' keep',
-      '-gone',
-      '+here',
-      '*** End of File',
-      '@@',
-      '-second',
-      '+SECOND',
+const wrap = (...body: string[]) => ['*** Begin Patch', ...body, '*** End Patch'].join('\n')
+
+describe('parseCodexPatch', () => {
+  it('parses add, delete, update with move, labels and end-of-file', () => {
+    const parsed = parseCodexPatch(wrap(
+      '*** Add File: a.txt', '+one', '+two',
       '*** Delete File: gone.txt',
-      '*** End Patch',
-    ].join('\n'))
-    expect(parsed.format).toBe('codex')
-    expect(parsed.ops).toHaveLength(3)
-    const [add, update, del] = parsed.ops
-    expect(add).toMatchObject({ kind: 'add', path: 'new.txt', lines: ['created'], trailingNewline: true })
-    expect(update.kind === 'update' && update.path).toBe('edit.txt')
-    if (update.kind === 'update') {
-      expect(update.hunks).toHaveLength(2)
-      expect(update.hunks[0].contextLabel).toBe('marker label')
-      expect(update.hunks[0].endOfFile).toBe(true)
-      expect(update.hunks[1].endOfFile).toBe(false)
-    }
-    expect(del).toMatchObject({ kind: 'delete', path: 'gone.txt' })
+      '*** Update File: src/x.py', '*** Move to: src/y.py',
+      '@@ class A', '@@ def f():', '-    pass', '+    return 1',
+      '@@', ' tail', '+more', '*** End of File',
+    ))
+    expect(parsed.ops).toEqual([
+      { kind: 'add', path: 'a.txt', content: 'one\ntwo\n' },
+      { kind: 'delete', path: 'gone.txt' },
+      {
+        kind: 'update', path: 'src/x.py', moveTo: 'src/y.py', chunks: [
+          { labels: ['class A', 'def f():'], oldLines: ['    pass'], newLines: ['    return 1'], endOfFile: false },
+          { labels: [], oldLines: ['tail'], newLines: ['tail', 'more'], endOfFile: true },
+        ],
+      },
+    ])
   })
 
-  it('parses Move to as an update with moveTo', () => {
-    const parsed = parseCodexPatch([
-      '*** Begin Patch',
-      '*** Update File: old-name.txt',
-      '*** Move to: new-name.txt',
-      '@@',
-      ' content',
-      '-x',
-      '+y',
-      '*** End Patch',
-    ].join('\n'))
-    expect(parsed.ops[0]).toMatchObject({ kind: 'update', path: 'old-name.txt', moveTo: 'new-name.txt' })
+  it('accepts a first change without "@@", as GPT models emit it', () => {
+    const parsed = parseCodexPatch(wrap('*** Update File: x', ' import foo', '+bar'))
+    expect(parsed.ops[0]).toMatchObject({ chunks: [{ labels: [], oldLines: ['import foo'], newLines: ['import foo', 'bar'] }] })
   })
 
-  it('accepts a heredoc / fenced wrapper around the markers', () => {
-    const wrapped = [
-      'bash-3.2$ apply_patch << "EOF"',
-      '*** Begin Patch',
-      '*** Add File: a.txt',
-      '+hi',
-      '*** End Patch',
-      'EOF',
-    ].join('\n')
-    const parsed = parseCodexPatch(wrapped)
-    expect(parsed.ops[0]).toMatchObject({ kind: 'add', path: 'a.txt' })
+  it('treats blank lines before the next operation or the end as separators', () => {
+    const parsed = parseCodexPatch(wrap('*** Update File: x', '@@', '-a', '+b', '', '*** Update File: y', '@@', '-c', '+d', ''))
+    expect(parsed.ops.map(op => op.kind === 'update' ? op.chunks[0].oldLines : [])).toEqual([['a'], ['c']])
   })
 
-  it('rejects an empty hunk', () => {
-    expect(() => parseCodexPatch([
-      '*** Begin Patch',
-      '*** Update File: f.txt',
-      '@@',
-      '*** End Patch',
-    ].join('\n'))).toThrowError(PatchError)
+  it('ignores a heredoc or fence around the markers and padded marker lines', () => {
+    const text = `apply_patch <<'EOF'\n*** Begin Patch \n*** Add File: n.txt\n+x\n  *** End Patch\nEOF`
+    expect(parseCodexPatch(text).ops).toEqual([{ kind: 'add', path: 'n.txt', content: 'x\n' }])
+    expect(detectFormat(text)).toBe('codex')
   })
 
-  it('rejects Environment ID patches', () => {
-    expect(() => parseCodexPatch([
-      '*** Begin Patch',
-      '*** Environment ID: env_abc',
-      '*** Add File: a.txt',
-      '+x',
-      '*** End Patch',
-    ].join('\n'))).toThrowError(/Environment ID/)
+  it('keeps an added file empty when it has no lines', () => {
+    expect(parseCodexPatch(wrap('*** Add File: empty.txt')).ops).toEqual([{ kind: 'add', path: 'empty.txt', content: '' }])
   })
 
-  it('rejects a missing End Patch marker', () => {
-    expect(() => parseCodexPatch([
-      '*** Begin Patch',
-      '*** Add File: a.txt',
-      '+x',
-    ].join('\n'))).toThrowError(PatchError)
-  })
-
-  it('rejects a patch with zero operations', () => {
-    expect(() => parseCodexPatch('*** Begin Patch\n*** End Patch\n')).toThrowError(PatchError)
-  })
-
-  it('rejects a bare file-content line inside Add File without the + marker', () => {
-    expect(() => parseCodexPatch([
-      '*** Begin Patch',
-      '*** Add File: a.txt',
-      'x',
-      '*** End Patch',
-    ].join('\n'))).toThrowError(/\+/)
+  it.each([
+    ['no end marker', '*** Begin Patch\n*** Add File: a\n+x', 'must end with "*** End Patch"'],
+    ['an update without changes', wrap('*** Update File: x'), 'has no changes'],
+    ['a context-only change', wrap('*** Update File: x', '@@', ' same'), 'has no "-" or "+" lines'],
+    ['a bad change line', wrap('*** Update File: x', '@@', '-a', '*b'), 'must start with " ", "-" or "+"'],
+    ['an add line without "+"', wrap('*** Add File: a', '+x', 'y'), 'must start with "+"'],
+    ['an unknown header', wrap('*** Rename File: a'), 'expected "*** Add File: "'],
+    ['a second change without "@@"', wrap('*** Update File: x', '@@', '-a', '+b', '*** End of File', '-c', '+d'), 'expected an "@@" line'],
+  ])('rejects %s', (_name, text, message) => {
+    expect(() => parseCodexPatch(text)).toThrow(message)
   })
 })

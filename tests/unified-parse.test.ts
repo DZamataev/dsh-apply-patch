@@ -1,146 +1,53 @@
 import { describe, expect, it } from 'vitest'
-import { parseUnifiedDiff } from '../src/parse/unified.js'
-import { PatchError } from '../src/errors.js'
+import { parseUnifiedDiff, unquote } from '../src/parse/unified.js'
+import { detectFormat } from '../src/detect.js'
 
-describe('unified diff parser', () => {
-  it('parses a single-file single-hunk update', () => {
+describe('parseUnifiedDiff', () => {
+  it('parses a git diff with hints and newline markers', () => {
     const parsed = parseUnifiedDiff([
-      '--- a/file.txt',
-      '+++ b/file.txt',
-      '@@ -1,3 +1,3 @@',
-      ' one',
-      '-two',
-      '+TWO',
-      ' three',
+      'diff --git a/f.txt b/f.txt', 'index 1..2 100644', '--- a/f.txt', '+++ b/f.txt',
+      '@@ -2,2 +2,2 @@ ctx', ' b', '-c', '\\ No newline at end of file', '+C', '\\ No newline at end of file',
     ].join('\n'))
-    expect(parsed.format).toBe('unified')
-    expect(parsed.ops).toHaveLength(1)
-    const op = parsed.ops[0]
-    expect(op.kind).toBe('update')
-    if (op.kind === 'update') {
-      expect(op.path).toBe('file.txt')
-      expect(op.hunks).toHaveLength(1)
-      expect(op.hunks[0].oldStart).toBe(1)
-      expect(op.hunks[0].lines).toEqual([
-        { kind: 'context', text: 'one' },
-        { kind: 'delete', text: 'two' },
-        { kind: 'add', text: 'TWO' },
-        { kind: 'context', text: 'three' },
-      ])
-    }
+    expect(parsed.ops).toEqual([{
+      kind: 'update', path: 'f.txt',
+      chunks: [{ labels: [], oldLines: ['b', 'c'], newLines: ['b', 'C'], endOfFile: false, oldStart: 2, oldCount: 2, oldNoNewline: true, newNoNewline: true }],
+    }])
   })
 
-  it('parses multiple hunks in one file', () => {
+  it('tolerates wrong counts, "@@ @@" headers, trailing blank lines and a fence with prose', () => {
+    const parsed = parseUnifiedDiff(['Here is the fix:', '```diff', '--- a/x', '+++ b/x', '@@ -1 +1 @@', ' keep', '-a', '+b', '', '```', '--- y', '+++ y', '@@ @@', '-c', '+d', ''].join('\n'))
+    expect(parsed.ops.map(op => op.kind === 'update' ? [op.path, op.chunks[0].oldLines] : [])).toEqual([['x', ['keep', 'a']], ['y', ['c']]])
+    expect(detectFormat('```diff\n--- a/x\n+++ b/x\n')).toBe('unified')
+  })
+
+  it('reads new, deleted and renamed files, including empty ones without hunks', () => {
     const parsed = parseUnifiedDiff([
-      '--- a/f.txt', '+++ b/f.txt',
-      '@@ -1,2 +1,2 @@', ' a', '-b', '+B',
-      '@@ -10,3 +10,3 @@', ' x', '-y', '+Y', ' z',
+      'diff --git a/new.txt b/new.txt', 'new file mode 100644', '--- /dev/null', '+++ b/new.txt', '@@ -0,0 +1,2 @@', '+a', '+b',
+      'diff --git a/e b/e', 'new file mode 100644', 'index 0000000..e69de29',
+      'diff --git a/old.txt b/old.txt', 'deleted file mode 100644', '--- a/old.txt', '+++ /dev/null', '@@ -1 +0,0 @@', '-x',
+      'diff --git a/m.txt b/n.txt', 'similarity index 90%', 'rename from m.txt', 'rename to n.txt', '--- a/m.txt', '+++ b/n.txt', '@@ -1 +1 @@', '-p', '+q',
     ].join('\n'))
-    expect(parsed.ops[0].kind === 'update' && parsed.ops[0].hunks).toHaveLength(2)
+    expect(parsed.ops.map(op => [op.kind, op.path, op.kind === 'update' ? op.moveTo : op.kind === 'add' ? op.content : undefined]))
+      .toEqual([['add', 'new.txt', 'a\nb\n'], ['add', 'e', ''], ['delete', 'old.txt', undefined], ['update', 'm.txt', 'n.txt']])
   })
 
-  it('splits a bare multi-file unified diff at every --- header', () => {
-    const parsed = parseUnifiedDiff([
-      '--- a/one.txt', '+++ b/one.txt',
-      '@@ -1,1 +1,1 @@', '-alpha', '+ALPHA',
-      '--- a/two.txt', '+++ b/two.txt',
-      '@@ -1,1 +1,1 @@', '-beta', '+BETA',
-    ].join('\n'))
-    expect(parsed.ops).toHaveLength(2)
-    expect(parsed.ops[0]).toMatchObject({ kind: 'update', path: 'one.txt' })
-    expect(parsed.ops[1]).toMatchObject({ kind: 'update', path: 'two.txt' })
-    expect(parsed.ops[0].kind === 'update' && parsed.ops[0].hunks).toHaveLength(1)
-    expect(parsed.ops[1].kind === 'update' && parsed.ops[1].hunks).toHaveLength(1)
+  it('patches the "+++" file of a bare diff with differing names instead of renaming', () => {
+    const parsed = parseUnifiedDiff(['--- foo.c.orig\t2024-01-01 10:00:00', '+++ foo.c\t2024-01-02 10:00:00', '@@ -1 +1 @@', '-a', '+b'].join('\n'))
+    expect(parsed.ops).toMatchObject([{ kind: 'update', path: 'foo.c' }])
+    expect(parsed.ops[0]).not.toHaveProperty('moveTo')
   })
 
-  it('parses a git new-file diff into an add op', () => {
-    const parsed = parseUnifiedDiff([
-      'diff --git a/new.txt b/new.txt',
-      'new file mode 100644',
-      '--- /dev/null',
-      '+++ b/new.txt',
-      '@@ -0,0 +1,2 @@',
-      '+hello',
-      '+world',
-    ].join('\n'))
-    expect(parsed.ops[0]).toMatchObject({ kind: 'add', path: 'new.txt', lines: ['hello', 'world'], trailingNewline: true })
+  it('decodes quoted paths with octal UTF-8 escapes', () => {
+    expect(unquote('"a/caf\\303\\251 x.txt"')).toBe('a/café x.txt')
+    const parsed = parseUnifiedDiff(['--- "a/caf\\303\\251"', '+++ "b/caf\\303\\251"', '@@ -1 +1 @@', '-a', '+b'].join('\n'))
+    expect(parsed.ops[0].path).toBe('café')
   })
 
-  it('parses a git deleted-file diff into a delete op', () => {
-    const parsed = parseUnifiedDiff([
-      'diff --git a/old.txt b/old.txt',
-      'deleted file mode 100644',
-      '--- a/old.txt',
-      '+++ /dev/null',
-      '@@ -1,1 +0,0 @@',
-      '-bye',
-    ].join('\n'))
-    expect(parsed.ops[0]).toMatchObject({ kind: 'delete', path: 'old.txt' })
-  })
-
-  it('parses a pure rename into an update with moveTo and no hunks', () => {
-    const parsed = parseUnifiedDiff([
-      'diff --git a/old.txt b/renamed.txt',
-      'similarity index 100%',
-      'rename from old.txt',
-      'rename to renamed.txt',
-    ].join('\n'))
-    expect(parsed.ops[0]).toMatchObject({ kind: 'update', path: 'old.txt', moveTo: 'renamed.txt', hunks: [] })
-  })
-
-  it('records \\ No newline markers for the new side', () => {
-    const parsed = parseUnifiedDiff([
-      '--- a/f.txt', '+++ b/f.txt',
-      '@@ -1,1 +1,1 @@',
-      '-old',
-      '+new',
-      '\\ No newline at end of file',
-    ].join('\n'))
-    const op = parsed.ops[0]
-    expect(op.kind === 'update' && op.hunks[0].newNoNewline).toBe(true)
-    expect(op.kind === 'update' && op.hunks[0].oldNoNewline).toBe(false)
-  })
-
-  it('normalizes CRLF input', () => {
-    const parsed = parseUnifiedDiff('--- a/f.txt\r\n+++ b/f.txt\r\n@@ -1,1 +1,1 @@\r\n-a\r\n+b\r\n')
-    expect(parsed.ops[0].kind === 'update' && parsed.ops[0].hunks[0].lines[0]).toEqual({ kind: 'delete', text: 'a' })
-  })
-
-  it('rejects a hunk whose counts do not match the body', () => {
-    expect(() => parseUnifiedDiff([
-      '--- a/f.txt', '+++ b/f.txt',
-      '@@ -1,3 +1,3 @@', '-a', '+b',
-    ].join('\n'))).toThrowError(PatchError)
-  })
-
-  it('rejects a hunk with context lines only', () => {
-    expect(() => parseUnifiedDiff([
-      '--- a/f.txt', '+++ b/f.txt',
-      '@@ -1,2 +1,2 @@', ' a', ' b',
-    ].join('\n'))).toThrowError(/no changes/)
-  })
-
-  it('rejects binary patches', () => {
-    expect(() => parseUnifiedDiff('diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ\n')).toThrowError(/binary/)
-  })
-
-  it('rejects completely unrecognized text with both syntax examples', () => {
-    try {
-      parseUnifiedDiff('hello world\nnothing here\n')
-      expect.unreachable()
-    } catch (error) {
-      expect(error).toBeInstanceOf(PatchError)
-      expect((error as PatchError).code).toBe('PARSE')
-      expect((error as PatchError).message).toContain('*** Begin Patch')
-      expect((error as PatchError).message).toContain('@@ -1,3')
-    }
-  })
-
-  it('parses a new-file diff at a nested path and strips a/b prefixes', () => {
-    const parsed = parseUnifiedDiff([
-      '--- /dev/null', '+++ b/src/dir/thing.ts',
-      '@@ -0,0 +1,1 @@', '+x',
-    ].join('\n'))
-    expect(parsed.ops[0]).toMatchObject({ kind: 'add', path: 'src/dir/thing.ts' })
+  it.each([
+    ['copy headers', 'diff --git a/a b/b\ncopy from a\ncopy to b', 'copy headers are not supported'],
+    ['binary patches', 'diff --git a/a b/a\nBinary files a/a and b/a differ', 'binary patches'],
+    ['text without changes', 'just prose', 'no file changes'],
+  ])('rejects %s', (_name, text, message) => {
+    expect(() => parseUnifiedDiff(text)).toThrow(message)
   })
 })

@@ -1,183 +1,75 @@
 /**
- * Error taxonomy and model-facing message builders.
- *
- * Every failure surfaces as a `PatchError` with a stable machine code so
- * retry/permission/UI layers can branch without parsing prose. Messages are
- * written for the model to self-correct: they carry the concrete file, hunk,
- * position and excerpt needed to fix the patch (no stacks, no internal paths).
- * @module dsh-patch-edit-plus/errors
+ * Typed failures and model-facing messages. `PatchError` extends DSH's
+ * `HarnessError`, so the tool runtime reports `{ name, code }` on the result.
+ * @module dsh-apply-patch/errors
  */
 
-/** Stable, machine-routable failure codes for patch application. */
+import { HarnessError } from '@deepseek-ai/dsh-llm'
+
+/** Stable failure codes. */
 export type PatchErrorCode =
-  /** The patch text is not a parseable patch in either supported syntax. */
-  | 'PARSE'
-  /** The patch conflicts with on-disk state or with itself. */
-  | 'CONFLICT'
-  /** Arguments or paths are invalid. */
-  | 'VALIDATION'
-  /** Filesystem I/O failed. */
-  | 'IO'
-  /** The requested operation is not available under the current configuration. */
-  | 'UNSUPPORTED'
-  /** A configured resource limit was exceeded. */
-  | 'LIMIT'
+  /** The text is not a patch in an accepted format. */
+  | 'PATCH_PARSE'
+  /** The patch does not match the files (missing file, existing file, context not found). */
+  | 'PATCH_CONFLICT'
+  /** A file must be read with the read tool before the patch may change it. */
+  | 'PATCH_NOT_OBSERVED'
+  /** A file changed after the session read it. */
+  | 'PATCH_STALE'
+  /** The sandbox mode forbids the write. */
+  | 'PATCH_SANDBOX'
+  /** A filesystem or shell operation failed. */
+  | 'PATCH_IO'
+  /** The operation is not available in this composition. */
+  | 'PATCH_UNSUPPORTED'
+  /** A configured limit was exceeded. */
+  | 'PATCH_LIMIT'
 
 /** Typed patch failure. */
-export class PatchError extends Error {
-  readonly code: PatchErrorCode
+export class PatchError extends HarnessError {
+  override readonly code: PatchErrorCode
 
-  constructor(code: PatchErrorCode, message: string) {
-    super(message)
+  constructor(code: PatchErrorCode, message: string, options?: ErrorOptions) {
+    super(message, code, options)
     this.name = 'PatchError'
     this.code = code
   }
 }
 
-/** Syntax examples embedded in "cannot recognize" errors so the model can retry in a valid dialect. */
-export const SYNTAX_EXAMPLES = [
-  'Supported patch styles:',
-  '1. git/unified diff:',
-  '--- a/file.txt',
-  '+++ b/file.txt',
-  '@@ -1,3 +1,3 @@',
-  ' context',
-  '-old line',
-  '+new line',
-  '2. Codex apply_patch syntax:',
+/** A minimal Codex example appended to parse errors so the model can retry. */
+export const CODEX_EXAMPLE = [
   '*** Begin Patch',
-  '*** Update File: file.txt',
-  '@@',
-  ' context',
-  '-old line',
-  '+new line',
+  '*** Update File: src/app.py',
+  '@@ def main():',
+  '-    print("old")',
+  '+    print("new")',
   '*** End Patch',
 ].join('\n')
 
-/** PARSE error for input that matches neither supported syntax. */
-export function unrecognizedPatchError(): PatchError {
-  return new PatchError('PARSE', `Cannot recognize the patch text as either supported syntax.\n${SYNTAX_EXAMPLES}`)
-}
-
-/** PARSE error with position information for malformed input. */
+/**
+ * PARSE error with a 1-based line of the patch text.
+ * @param lineNo - line of the patch text, or 0 for the whole text.
+ * @param why - what is wrong.
+ * @returns the error.
+ */
 export function parseError(lineNo: number, why: string): PatchError {
-  return new PatchError('PARSE', `Invalid patch at line ${lineNo}: ${why}`)
-}
-
-/** Structured error when a recognized Codex patch arrives while the style is disabled (actionable, not a parse failure). */
-export function codexDisabledError(): PatchError {
-  return new PatchError(
-    'UNSUPPORTED',
-    'The patch was recognized as Codex `apply_patch` syntax, but that style is currently disabled. '
-      + 'Retry with a git/unified diff patch instead, or enable the Codex style by setting '
-      + '`allowCodexPatch: true` in the dsh-patch-edit-plus plugin configuration.',
-  )
-}
-
-/** Structured error when a unified diff arrives while that style is disabled. */
-export function unifiedDisabledError(): PatchError {
-  return new PatchError(
-    'UNSUPPORTED',
-    'The patch was recognized as a git/unified diff, but that style is currently disabled. '
-      + 'Enable it by setting `allowUnifiedDiff: true` in the dsh-patch-edit-plus plugin configuration.',
-  )
-}
-
-/** CONFLICT error for an Add onto an existing path (Codex semantics). */
-export function addExistsError(path: string): PatchError {
-  return new PatchError('CONFLICT', `Add File targets "${path}" but the file already exists. Use an Update hunk to modify it, or Delete it first.`)
-}
-
-/** CONFLICT error for update/delete of a missing file. */
-export function missingFileError(path: string, action: string): PatchError {
-  return new PatchError('CONFLICT', `Cannot ${action} "${path}": the file does not exist.`)
-}
-
-/** CONFLICT error for a Move onto an existing path. */
-export function moveTargetExistsError(path: string): PatchError {
-  return new PatchError('CONFLICT', `Cannot move to "${path}": the target already exists.`)
-}
-
-/** CONFLICT error when one resolved file is hit by more than one patch operation. */
-export function duplicatePathError(path: string): PatchError {
-  return new PatchError('CONFLICT', `The patch touches "${path}" in more than one file section. Split it into separate apply_patch calls with one section per file.`)
-}
-
-/** VALIDATION error for paths escaping the workspace. */
-export function pathEscapeError(path: string): PatchError {
-  return new PatchError('VALIDATION', `Path "${path}" escapes the session workspace. Patch paths must stay inside the workspace.`)
-}
-
-/** VALIDATION error when a symlink is on the patch path (followSymlinks: false). */
-export function symlinkRejectedError(path: string, at: string): PatchError {
-  return new PatchError('VALIDATION', `Path "${path}" traverses the symbolic link "${at}". Symbolic links are rejected by the default followSymlinks: false policy.`)
-}
-
-/** VALIDATION error when the Add parent directory does not exist (matches the native write tool's behavior). */
-export function missingParentError(path: string, parent: string): PatchError {
-  return new PatchError('VALIDATION', `Cannot add "${path}": parent directory "${parent}" does not exist. Create the directory first (for example with the bash tool).`)
-}
-
-/** LIMIT error for exceeding a configured cap. */
-export function limitError(what: string, actual: number, limit: number): PatchError {
-  return new PatchError('LIMIT', `Patch rejected: ${what} is ${actual}, exceeding the configured limit of ${limit}. Split the patch into smaller apply_patch calls.`)
-}
-
-/** UNSUPPORTED error when delete/move is disabled or no shell capability exists. */
-export function unsupportedShellError(why: string): PatchError {
-  return new PatchError('UNSUPPORTED', `${why} Apply the change with a bash command instead (for example \`rm\` or \`mv\`), or adjust the dsh-patch-edit-plus deleteBackend configuration.`)
-}
-
-const MAX_PREVIEW_LINES = 12
-const MAX_ACTUAL_LINES = 10
-
-/** Render one line with visible whitespace so exact-match failures are diagnosable. */
-function visible(line: string): string {
-  return line.replaceAll(' ', '[space]').replaceAll('\t', '[tab]') || '[empty]'
-}
-
-interface MismatchInput {
-  /** Display path of the file that failed to locate. */
-  path: string
-  /** 1-based hunk index within the file section. */
-  hunkIndex: number
-  /** 1-based line number where the search started. */
-  searchFromLine: number
-  /** The context/delete lines the hunk expected to find. */
-  expected: string[]
-  /** The file's actual lines around the search origin. */
-  actual: string[]
-  /** True when the hunk carried an `*** End of File` pin. */
-  endOfFile?: boolean
+  const where = lineNo > 0 ? `Invalid patch at line ${lineNo}: ` : 'Invalid patch: '
+  return new PatchError('PATCH_PARSE', `${where}${why}`)
 }
 
 /**
- * Four-element mismatch diagnostic: file + hunk index, search origin, expected
- * preview, actual excerpt — plus a targeted hint when the expected lines look
- * like they still carry patch markers (the classic duplicated-prefix mistake).
+ * PARSE error for text in neither accepted format.
+ * @returns the error, with a Codex example.
  */
-export function mismatchMessage(input: MismatchInput): string {
-  const expected = input.expected.slice(0, MAX_PREVIEW_LINES).map(visible)
-  const actual = input.actual.slice(0, MAX_ACTUAL_LINES).map(visible)
-  const parts = [
-    `Hunk ${input.hunkIndex} of "${input.path}" does not apply: the context does not match the file.`,
-    `Search started at line ${input.searchFromLine}${input.endOfFile ? ' (pinned to end of file)' : ''}.`,
-    `Expected lines:\n${expected.join('\n')}`,
-    `File around the search origin:\n${actual.length > 0 ? actual.join('\n') : '[end of file]'}`,
-  ]
-  const markerHint = input.expected.find(line => /^[+\-@@]/.test(line))
-  if (markerHint !== undefined) {
-    parts.push(
-      `Hint: an expected line starts with a patch marker ("${visible(markerHint).slice(0, 40)}"). `
-        + 'Inside an Update hunk only the context/removed lines must match the file exactly as it exists — '
-        + 'do not include "+"/"-"/"@@" prefixes from an outer diff in the hunk body.',
-    )
-  }
-  return parts.join('\n')
+export function unrecognizedError(): PatchError {
+  return new PatchError('PATCH_PARSE', `The input is not a patch. Use the Codex patch format, for example:\n${CODEX_EXAMPLE}\nA git unified diff is also accepted.`)
 }
 
-/** IO error wrapping a backend failure. */
-export function ioError(what: string, cause: unknown): PatchError {
-  const detail = cause instanceof Error ? cause.message : String(cause)
-  return new PatchError('IO', `${what}: ${detail}`)
+/**
+ * Quote one file line for a message, keeping whitespace visible.
+ * @param line - the line.
+ * @returns the JSON-quoted line, shortened to 200 characters.
+ */
+export function quote(line: string): string {
+  return JSON.stringify(line.length > 200 ? `${line.slice(0, 200)}…` : line)
 }

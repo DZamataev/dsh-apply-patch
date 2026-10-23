@@ -1,21 +1,33 @@
 /**
- * Context-line location with three tolerance levels.
+ * Locating a sequence of lines in a file, after codex-rs `seek_sequence`:
+ * exact match first, then ignoring trailing whitespace, then surrounding
+ * whitespace, then typographic punctuation (dashes, quotes, odd spaces).
  *
- * Levels, tried in order over the whole search window (exact matches always
- * win over trimmed ones): exact equality → `trimEnd` → full `trim`. Only the
- * context/remove lines participate; add lines are insertions and never
- * constrain the position.
- * @module dsh-patch-edit-plus/apply/seek
+ * An exact match takes the candidate nearest to the hint (the first one at or
+ * after the cursor without a hint). The tolerant levels accept only a single
+ * candidate: two or more tolerant matches are reported as ambiguous instead of
+ * silently editing one of them.
+ * @module dsh-apply-patch/apply/seek
  */
-import type { PatchLine } from '../parse/types.js';
-/** Locate `expected` inside `fileLines` starting at `from`. Returns the match index or `null`. */
-export declare function findSequence(fileLines: readonly string[], expected: readonly PatchLine[], from: number, opts?: {
-    endOfFile?: boolean;
-}): number | null;
+/** Result of a search. */
+export type SeekResult = {
+    kind: 'found';
+    index: number;
+} | {
+    kind: 'none';
+} | {
+    kind: 'ambiguous';
+    indices: number[];
+};
 /**
- * Number of old-side lines a hunk consumes at its match position
- * (context + delete lines).
+ * Find `pattern` in `lines` at or after `from`.
+ * @param lines - file lines without line terminators.
+ * @param pattern - lines to find; empty matches at `from` (at the end with `endOfFile`).
+ * @param from - first index a match may start at.
+ * @param options - `endOfFile` pins the match to the end; `hint` prefers the nearest exact candidate.
+ * @returns the match, no match, or the ambiguous tolerant candidates.
  */
-export declare function consumedLines(hunk: {
-    lines: readonly PatchLine[];
-}): number;
+export declare function seek(lines: readonly string[], pattern: readonly string[], from: number, options?: {
+    endOfFile?: boolean;
+    hint?: number;
+}): SeekResult;
