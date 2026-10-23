@@ -74,6 +74,7 @@ describe('apply_patch on real DSH services', () => {
     writeFileSync(join(h.dir, 'm.txt'), 'm\n')
     writeFileSync(join(h.dir, 'gone.bin'), Buffer.from([0, 255, 0]))
     await h.observe('m.txt')
+    await h.observe('gone.bin')
     await h.run(patch('*** Update File: m.txt', '*** Move to: sub/n.txt', '@@', '-m', '+M', '*** Delete File: gone.bin'))
     expect(readFileSync(join(h.dir, 'sub/n.txt'), 'utf8')).toBe('M\n')
     expect(existsSync(join(h.dir, 'm.txt'))).toBe(false)

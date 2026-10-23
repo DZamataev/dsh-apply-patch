@@ -41,8 +41,8 @@ const CODEX_FORMAT = `Edit files with a patch in this format:
 - "*** End of File" after a change pins it to the end of the file.
 - Every line of an added file starts with "+".
 - Paths are relative to the working directory, or absolute.
-- Read a file with the read tool before updating it.
-- The whole patch is checked before anything is written; if a write fails, the earlier changes of the same patch are undone.`
+- Read a file with the read tool before updating, moving or deleting it.
+- The whole patch is checked before anything is written. If a step still fails, the earlier changes of the same patch are undone; the error names every file that could not be put back (for example because something else changed it meanwhile) or whose state is unknown.`
 
 /**
  * Build the tool definition.
@@ -54,7 +54,7 @@ export function buildApplyPatchTool(ctx: Context, cfg: ResolvedConfig): ToolDefi
   const formats = [cfg.allowCodexPatch ? 'Codex patch' : null, cfg.allowUnifiedDiff ? 'git unified diff' : null].filter(Boolean).join(' or ')
   const description = cfg.allowCodexPatch
     ? `${CODEX_FORMAT}${cfg.allowUnifiedDiff ? '\n- A git unified diff is accepted too.' : ''}`
-    : 'Edit files with a git unified diff. Read a file with the read tool before updating it. The whole diff is checked before anything is written.'
+    : 'Edit files with a git unified diff. Read a file with the read tool before updating, moving or deleting it. The whole diff is checked before anything is written; if a step still fails, the earlier changes are undone and the error names every file that could not be put back.'
   return defineTool({
     name: cfg.toolName,
     description,

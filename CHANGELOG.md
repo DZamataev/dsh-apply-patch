@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.1 (2026-10-24)
+
+- Delete File and the source of Move to require that the session read the file and that it did not change since, like Update File, also in a dry run.
+- Every removal is version-guarded: the file is stat'ed just before the shell command and kept if it changed (including a move source overwritten between checking and committing, and a created file edited by someone else before the undo). The outcome is learned by stat'ing again, so a removal the shell reports as failed but that happened is recorded, and an undeterminable one is reported as unknown.
+- Delete File and Move to refuse a symbolic link instead of removing its target; Add File refuses a dangling link.
+- Undo keeps a move destination when the source could not be restored, runs without the call's abort signal, and reports each file it could not put back; the error no longer claims that nothing was changed when that is not known.
+- A shell is required up front whenever undoing could need it (Add File together with other operations).
+- In `workspace-write` mode a removal outside the workspace and temp directories is refused up front.
+- After a failed patch, files the undo put back count as read at their restored version.
+- Tool descriptions state what happens when an undo is impossible.
+- Tests: version races, abort, uncertain shell outcomes, symbolic links, the fs sandbox in `workspace-write` mode, and exact output bytes of realistic Codex patches.
+
 ## 1.0.0 (2026-10-24)
 
 First release of the fork, renamed `@local/dsh-apply-patch`. Differences from `dsh-patch-edit-plus` 0.4.3:
