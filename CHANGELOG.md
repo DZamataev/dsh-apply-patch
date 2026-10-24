@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.1 (2026-10-24)
+
+- Delete File verifies the staged file: it must hold the bytes checked while preparing (SHA-256 over the whole file, binary included). A file edited in place while it was staged is put back when its name is free, or kept and named, and the patch fails with `PATCH_STALE` (was: the edit travelled into staging and was removed while the result said deleted). Undoing an added file checks the staged copy against the text written.
+- Staged files are removed one by one with `rm -f`, each after checking its version and bytes again, and then their directory with `rmdir` (was: `rm -rf` of the whole staging directory); a staged file that changed is kept and named in the result.
+- A staging directory is used only when this patch's own `mkdir` created it; an existing name gets a new random name (up to three tries), and a directory whose creation is unknown is never removed (was: an existing directory was adopted and removed with its contents, and the error said no file had been changed).
+- An undone move or deletion counts as undone only when the file put back holds its text or bytes; otherwise the error names it (was: an unverifiable move-back was reported as undone).
+- Unified: `\ No newline at end of file` markers are recognized as git recognizes them (a line starting with `\ `, at least 12 bytes inside a hunk); another line starting with `\` inside a hunk is a `PATCH_PARSE` error, and after a hunk it is skipped as git skips it (was: any line starting with `\` removed the newline).
+- Unified: a hunk with a marked line that git would match against a line with a newline, joining the next line onto the new text, is refused with `PATCH_CONFLICT` (was: applied at the file's real end, a different place than git).
+- Unified: a new file whose hunks have context or removed lines is refused, as git refuses it; text between a `+++` header and the first hunk is a `PATCH_PARSE` error, except git header lines in a `diff --git` section.
+- Tool description: `*** End of File` notes that a change whose unchanged and removed lines are all blank is inserted at the current position.
+- Tests: in-place edits during and after staging, a pre-existing staging directory, a staging directory of unknown origin, an unverifiable move-back, 11 new byte-exact reference cases checked against `git apply`.
+
 ## 1.1.0 (2026-10-24)
 
 Delete File and Move to change semantics: files are relinked instead of rewritten and removed, and no permission bits are read or set any more.

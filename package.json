@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-apply-patch",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Codex-style apply_patch tool for DeepSeek Harness Agent Presets: Codex and unified-diff patches applied through ctx.fs with the read-before-write gate and rollback on failure. Fork of drscrewdriver/dsh-patch-edit-plus 0.4.3.",
   "license": "MIT",
