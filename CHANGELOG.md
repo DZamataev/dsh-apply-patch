@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2 (2026-10-24)
+
+- The staged-file digest reads a file only up to the size its first stat reported, stops as soon as the file's version changes between read windows, and honours the call's abort signal while applying (was: an unbounded read that a growing file could keep going).
+- Dry runs and real runs check `workspace-write` containment up front for every write target: an added file, a changed updated file and a move destination; a dry run now reports the sandbox denial instead of succeeding.
+- Unified: git header lines are read only right after a `diff --git` line, up to the first line that is not one, as `git apply` reads them. After a hunk or before a bare `---`/`+++` pair, `rename from`/`rename to`, `new file mode`, `deleted file mode`, `copy from`/`copy to`, mode, `similarity index` and `index` lines are skipped text (was: a `rename from`/`rename to` after a hunk moved the file, and `deleted file mode` after a hunk deleted it).
+- Unified: in a `diff --git` header, `---`/`+++` names must agree with earlier lines, `/dev/null` needs `new file mode`/`deleted file mode`, a rename needs both `rename from` and `rename to`, modes must be octal, new file, deleted file and rename exclude each other, and a section without a hunk right after its header lines must be a new file, a deletion, a rename or a mode change; each violation is a `PATCH_PARSE` error, as git rejects it. Differing old and new names in a `diff --git` section move the file, as with git. A `diff --git` line without header lines is skipped text, and a hunk without a file header is a `PATCH_PARSE` error.
+- README: the Codex blank-tail extra and the unified last-line-without-LF extra are stated precisely.
+- Tests: 46 git header cases, each also checked against the installed `git apply`.
+
 ## 1.1.1 (2026-10-24)
 
 - Delete File verifies the staged file: it must hold the bytes checked while preparing (SHA-256 over the whole file, binary included). A file edited in place while it was staged is put back when its name is free, or kept and named, and the patch fails with `PATCH_STALE` (was: the edit travelled into staging and was removed while the result said deleted). Undoing an added file checks the staged copy against the text written.
