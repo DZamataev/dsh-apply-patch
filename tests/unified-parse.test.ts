@@ -53,7 +53,7 @@ describe('parseUnifiedDiff', () => {
   it.each([
     ['context lines', '--- /dev/null\n+++ b/f\n@@ -1,2 +1,3 @@\n a\n b\n+c\n'],
     ['a line removed and added again', '--- /dev/null\n+++ b/f\n@@ -1 +1 @@\n-a\n+a\n'],
-    ['context lines after "new file mode"', 'diff --git a/f b/f\nnew file mode 100644\n--- a/f\n+++ b/f\n@@ -1 +1,2 @@\n a\n+b\n'],
+    ['context lines after "new file mode"', 'diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n@@ -1 +1,2 @@\n a\n+b\n'],
   ])('rejects a new file whose hunk has %s, as git does', (_name, diff) => {
     expect(() => parseUnifiedDiff(diff)).toThrow('every line of a new file starts with "+"')
   })
