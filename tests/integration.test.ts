@@ -85,6 +85,20 @@ describe('apply_patch on real DSH services', () => {
     expect(readFileSync(join(h.dir, 'm.txt'), 'utf8')).toBe('again\n')
   })
 
+  it('refuses a unified diff that changes a mode before writing anything, also in a dry run', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'f'), 'a\n')
+    writeFileSync(join(h.dir, 'run.sh'), 'echo\n', { mode: 0o644 })
+    await h.observe('f')
+    await h.observe('run.sh')
+    const body = ['diff --git a/f b/f', '--- a/f', '+++ b/f', '@@ -1 +1 @@', '-a', '+A', 'diff --git a/run.sh b/run.sh', 'old mode 100644', 'new mode 100755', ''].join('\n')
+    for (const extra of [{ dry_run: true }, {}]) {
+      await expect(h.run(body, extra)).rejects.toMatchObject({ code: 'PATCH_UNSUPPORTED', message: expect.stringContaining('Change the mode with the shell') })
+    }
+    expect(readFileSync(join(h.dir, 'f'), 'utf8')).toBe('a\n')
+    expect(statSync(join(h.dir, 'run.sh')).mode & 0o777).toBe(0o644)
+  })
+
   it('deletes a file with a unified diff only when its hunks remove the whole file', async () => {
     const h = await open()
     writeFileSync(join(h.dir, 'f'), 'first\nsecond\n')

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.3 (2026-10-24)
+
+- Unified: a `diff --git` header that would change or set a file mode is refused with `PATCH_UNSUPPORTED` before anything is written, also in a dry run, and the whole patch is refused: a `new mode` line that differs from the old mode or comes without one, with or without hunks, next to other files or a rename, and a `new file mode` other than `100644` (executable, symbolic link, submodule entry). Was: a pure mode change failed with `PATCH_PARSE: the diff contains no file changes`, or was silently dropped next to other files; a mode change with hunks applied only the text; an executable or symbolic link new file was created as a regular non-executable file. `git apply` changes the mode in all these cases, and this tool cannot.
+- Unified: modes are compared as git canonicalizes them (`100664` is `100644`), so `old mode 100644` with `new mode 100664` is no mode change.
+- README: mode changes are listed among the git-accepted patches this tool refuses, and under Known limitations.
+- Tests: 23 mode-line cases, each checked against the installed `git apply` for the resulting modes and texts, and an integration test that a refused mode change writes nothing.
+
 ## 1.1.2 (2026-10-24)
 
 - The staged-file digest reads a file only up to the size its first stat reported, stops as soon as the file's version changes between read windows, and honours the call's abort signal while applying (was: an unbounded read that a growing file could keep going).

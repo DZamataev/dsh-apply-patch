@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -127,5 +127,78 @@ describe('git header lines', () => {
 
   it.runIf(hasGit).each(cases)('git apply agrees: $name', ({ patch, git: expected }) => {
     expect(real(patch)).toEqual(expected)
+  })
+})
+
+/** Files after `git apply` as `<kind>:<text>`: kind is the octal permission bits, `link` or `dir`. */
+type ModeOutcome = Record<string, string> | 'error'
+
+interface ModeCase {
+  name: string
+  patch: string
+  /** What `git apply` (umask 022) leaves, starting from `f` = `before` with mode 644. */
+  git: ModeOutcome
+  /** What this tool leaves (no mode is ever changed), or `unsupported` for a `PATCH_UNSUPPORTED` refusal. */
+  ours: Outcome | 'unsupported'
+}
+
+const newG = (mode: string) => `diff --git a/g b/g\nnew file mode ${mode}\n--- /dev/null\n+++ b/g\n@@ -0,0 +1 @@\n+x\n`
+
+const modeCases: ModeCase[] = [
+  { name: 'refuses a mode change without hunks', patch: `${git}old mode 100644\nnew mode 100755\n`, git: { f: '755:a\nb\n' }, ours: 'unsupported' },
+  { name: 'refuses a mode change with hunks', patch: `${git}old mode 100644\nnew mode 100755\n${head}${hunk}`, git: { f: '755:A\nb\n' }, ours: 'unsupported' },
+  { name: 'refuses removing the executable bit', patch: `${git}old mode 100755\nnew mode 100644\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: 'unsupported' },
+  { name: 'refuses a mode change next to another file', patch: `${git}old mode 100644\nnew mode 100755\n${newG('100644')}`, git: { f: '755:a\nb\n', g: '644:x\n' }, ours: 'unsupported' },
+  { name: 'refuses a mode change after another file', patch: `${newG('100644')}${git}old mode 100644\nnew mode 100755\n${head}${hunk}`, git: { f: '755:A\nb\n', g: '644:x\n' }, ours: 'unsupported' },
+  { name: 'refuses "new mode" without "old mode" before a hunk', patch: `${git}new mode 100755\n${head}${hunk}`, git: { f: '755:A\nb\n' }, ours: 'unsupported' },
+  { name: 'refuses "new mode" without "old mode" or a hunk', patch: `${git}new mode 100755\n`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses "new mode" after the mode of an "index" line', patch: `${git}index 1234567..abcdef0 100644\nnew mode 100755\n`, git: { f: '755:a\nb\n' }, ours: 'unsupported' },
+  { name: 'refuses a mode change with a rename', patch: 'diff --git a/f b/g\nold mode 100644\nnew mode 100755\nrename from f\nrename to g\n', git: { g: '755:a\nb\n' }, ours: 'unsupported' },
+  { name: 'refuses an executable new file', patch: newG('100755'), git: { f: '644:a\nb\n', g: '755:x\n' }, ours: 'unsupported' },
+  { name: 'refuses a new file with group write and execute bits', patch: newG('100775'), git: { f: '644:a\nb\n', g: '755:x\n' }, ours: 'unsupported' },
+  { name: 'refuses a new symbolic link', patch: newG('120000'), git: { f: '644:a\nb\n', g: 'link:x\n' }, ours: 'unsupported' },
+  { name: 'refuses a new submodule entry', patch: newG('160000'), git: { f: '644:a\nb\n', g: 'dir:' }, ours: 'unsupported' },
+  { name: 'refuses a new file mode without file type bits', patch: newG('644'), git: { f: '644:a\nb\n', g: 'dir:' }, ours: 'unsupported' },
+  { name: 'accepts equal old and new modes before a hunk', patch: `${git}old mode 100644\nnew mode 100644\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: updated },
+  { name: 'accepts modes that git reads as the same mode before a hunk', patch: `${git}old mode 100644\nnew mode 100664\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: updated },
+  { name: 'rejects modes that git reads as the same mode without hunks', patch: `${git}old mode 100644\nnew mode 100664\n`, git: 'error', ours: 'error' },
+  { name: 'accepts a lone "old mode" line before a hunk', patch: `${git}old mode 100755\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: updated },
+  { name: 'accepts the mode of an "index" line before a hunk', patch: `${git}index 1234567..abcdef0 100755\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: updated },
+  { name: 'accepts a regular new file', patch: newG('100644'), git: { f: '644:a\nb\n', g: '644:x\n' }, ours: { f: before, g: 'x\n' } },
+  { name: 'accepts a new file mode that git reads as 100644', patch: newG('100664'), git: { f: '644:a\nb\n', g: '644:x\n' }, ours: { f: before, g: 'x\n' } },
+  { name: 'accepts deleting a file with another mode', patch: `${git}deleted file mode 100755\n--- a/f\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n`, git: {}, ours: {} },
+  { name: 'skips mode lines after a hunk', patch: `${git}${head}${hunk}old mode 100644\nnew mode 100755\n`, git: { f: '644:A\nb\n' }, ours: updated },
+]
+
+/** Apply `patch` with `git apply` under umask 022 and report kinds and texts of the files. */
+function realModes(patch: string): ModeOutcome {
+  const dir = mkdtempSync(join(tmpdir(), 'ap-git-modes-'))
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: dir })
+    writeFileSync(join(dir, 'f'), before)
+    chmodSync(join(dir, 'f'), 0o644)
+    writeFileSync(join(dir, '.patch'), patch)
+    if (spawnSync('sh', ['-c', 'umask 022 && git apply .patch'], { cwd: dir }).status !== 0) return 'error'
+    const files: Record<string, string> = {}
+    for (const name of readdirSync(dir)) {
+      if (name === '.git' || name === '.patch') continue
+      const path = join(dir, name)
+      const stat = lstatSync(path)
+      files[name] = stat.isSymbolicLink() ? `link:${readlinkSync(path)}` : stat.isDirectory() ? 'dir:' : `${(stat.mode & 0o777).toString(8)}:${readFileSync(path, 'utf8')}`
+    }
+    return files
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+describe('git mode lines', () => {
+  it.each(modeCases)('$name', ({ patch, ours: expected }) => {
+    if (expected !== 'unsupported') return expect(ours(patch)).toEqual(expected)
+    expect(() => parseUnifiedDiff(patch)).toThrow(expect.objectContaining({ code: 'PATCH_UNSUPPORTED', message: expect.stringMatching(/mode .*not supported|not supported.*mode/) }))
+  })
+
+  it.runIf(hasGit).each(modeCases)('git apply: $name', ({ patch, git: expected }) => {
+    expect(realModes(patch)).toEqual(expected)
   })
 })

@@ -12,10 +12,14 @@
  * as `apply.c` `parse_git_diff_header` reads them; anywhere else (after a hunk,
  * before a bare `---`/`+++` pair) they are text git skips. A `diff --git` line
  * without header lines is such text too. A `diff --git` section without a hunk
- * right after its header lines must be a new file, a deletion, a rename or a
- * mode change. Between a bare `+++` header and the first hunk nothing may
- * stand. The parser is lenient where models are sloppy, but never so that lines
- * are silently dropped:
+ * right after its header lines must be a new file, a deletion or a rename.
+ * Between a bare `+++` header and the first hunk nothing may stand. Modes are
+ * compared as git canonicalizes them; a header that would change a file's
+ * mode (`new mode` differing from the old mode or without one) or create
+ * anything but a non-executable regular file (`new file mode` other than
+ * `100644`) is refused with `PATCH_UNSUPPORTED`, because the tool writes file
+ * contents only and git would change the mode. The parser is lenient where
+ * models are sloppy, but never so that lines are silently dropped:
  *
  * - text before the first header and between files (prose, a ```diff fence, `Index:` lines) is skipped;
  * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
@@ -33,7 +37,7 @@
  * @module dsh-apply-patch/parse/unified
  */
 
-import { parseError } from '../errors.js'
+import { PatchError, parseError } from '../errors.js'
 import type { Chunk, ParsedPatch, PatchOp } from './types.js'
 
 interface Section {
@@ -54,7 +58,8 @@ const HUNK = /^@@(?: -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?)? ?@@/
  * Parse a git or unified diff.
  * @param text - the diff text.
  * @returns the parsed patch.
- * @throws {@link PatchError} `PATCH_PARSE` with the failing line.
+ * @throws {@link PatchError} `PATCH_PARSE` with the failing line, or
+ * `PATCH_UNSUPPORTED` for a header that would change or set a file mode.
  */
 export function parseUnifiedDiff(text: string): ParsedPatch {
   const lines = text.split('\n')
@@ -121,8 +126,10 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
  * lines gave; a new or deleted file takes the `diff --git` name and needs
  * `/dev/null` on its other side; a rename needs both its names.
  * @returns the section without hunks, the index of the line after the header
- * lines, and whether the header changes more than file text (git accepts only
- * such a section without hunks).
+ * lines, and whether the header is a new file, a deletion or a rename (git
+ * accepts only such a section, or a mode change, without hunks).
+ * @throws {@link PatchError} `PATCH_PARSE` for a header git rejects,
+ * `PATCH_UNSUPPORTED` for one that would change or set a mode.
  */
 function parseGitHeader(lines: readonly string[], at: number): { section: Section; next: number; metadata: boolean } {
   const paths = splitGitPaths(withoutCr(lines[at]).slice('diff --git '.length))
@@ -134,6 +141,8 @@ function parseGitHeader(lines: readonly string[], at: number): { section: Sectio
   let isRename = false
   let oldMode: number | undefined
   let newMode: number | undefined
+  /** Line of the last `new mode` or `new file mode` line. */
+  let newModeLine = 0
   let extensionLine: number | undefined
   let j = at + 1
   for (; j < lines.length; j += 1) {
@@ -145,9 +154,9 @@ function parseGitHeader(lines: readonly string[], at: number): { section: Sectio
     else if ((rest = after('--- ')) !== undefined) oldName = verifyName(lineNo, rest, isNew, oldName, 'old')
     else if ((rest = after('+++ ')) !== undefined) newName = verifyName(lineNo, rest, isDelete, newName, 'new')
     else if ((rest = after('old mode ')) !== undefined) oldMode = parseMode(lineNo, rest)
-    else if ((rest = after('new mode ')) !== undefined) newMode = parseMode(lineNo, rest)
+    else if ((rest = after('new mode ')) !== undefined) { newMode = parseMode(lineNo, rest); newModeLine = lineNo }
     else if ((rest = after('deleted file mode ')) !== undefined) { isDelete = true; oldName = defaultName; oldMode = parseMode(lineNo, rest) }
-    else if ((rest = after('new file mode ')) !== undefined) { isNew = true; newName = defaultName; newMode = parseMode(lineNo, rest) }
+    else if ((rest = after('new file mode ')) !== undefined) { isNew = true; newName = defaultName; newMode = parseMode(lineNo, rest); newModeLine = lineNo }
     else if (line.startsWith('copy from ') || line.startsWith('copy to ')) throw parseError(lineNo, 'git copy headers are not supported; write the new file with "+" lines instead')
     else if ((rest = after('rename old ') ?? after('rename from ')) !== undefined) { isRename = true; oldName = unquote(rest) }
     else if ((rest = after('rename new ') ?? after('rename to ')) !== undefined) { isRename = true; newName = unquote(rest) }
@@ -164,9 +173,19 @@ function parseGitHeader(lines: readonly string[], at: number): { section: Sectio
   if ((newName === undefined && !isDelete) || (oldName === undefined && !isNew)) {
     throw parseError(at + 1, `the "diff --git" section lacks its ${newName === undefined ? 'new' : 'old'} file name; a rename needs both "rename from" and "rename to", as for git apply`)
   }
+  if (isNew && newMode !== 0o100644) {
+    throw unsupported(newModeLine, `"new file mode ${newMode?.toString(8)}" asks for ${newMode === 0o100755 ? 'an executable file' : newMode === 0o120000 ? 'a symbolic link' : 'a directory or submodule entry'}, and apply_patch creates only regular files with the default mode; file modes are not supported. Send the file with "new file mode 100644" and change its mode with the shell afterwards`)
+  }
+  if (!isNew && newMode !== undefined && newMode !== oldMode) {
+    throw unsupported(newModeLine, `mode changes ("old mode"/"new mode" lines) are not supported, and git apply would change the mode of "${newName ?? oldName}" to ${newMode.toString(8)}; apply_patch writes file contents only. Change the mode with the shell and send the content change without the mode lines`)
+  }
   const section: Section = { start: at + 1, git: true, oldPath: oldName ?? null, newPath: newName ?? null, newFile: isNew, deletedFile: isDelete, chunks: [] }
-  const modeChange = oldMode !== undefined && newMode !== undefined && oldMode !== newMode
-  return { section, next: j, metadata: isNew || isDelete || isRename || modeChange }
+  return { section, next: j, metadata: isNew || isDelete || isRename }
+}
+
+/** `PATCH_UNSUPPORTED` for a header line of a valid diff that asks for more than file contents; nothing has been written. */
+function unsupported(lineNo: number, why: string): PatchError {
+  return new PatchError('PATCH_UNSUPPORTED', `Unsupported patch at line ${lineNo}: ${why}.`)
 }
 
 /**
@@ -192,11 +211,23 @@ function verifyName(lineNo: number, raw: string, absent: boolean, known: string 
   return undefined
 }
 
-/** A git mode as `apply.c` `parse_mode_line` reads it: an octal number followed by whitespace or the end of the line. */
+/**
+ * A git mode as `apply.c` `parse_mode_line` reads it: an octal number followed
+ * by whitespace or the end of the line, canonicalized as git `canon_mode` does
+ * (a regular file is `100755` with the owner execute bit, otherwise `100644`;
+ * a symbolic link `120000`; a directory `40000`; anything else a submodule
+ * entry `160000`).
+ */
 function parseMode(lineNo: number, text: string): number {
   const match = /^[\t\v\f\r ]*[+-]?([0-7]+)(?:[\t\v\f\r ]|$)/.exec(text)
   if (match === null) throw parseError(lineNo, `invalid mode "${text}"; a git mode is an octal number such as 100644`)
-  return parseInt(match[1], 8)
+  const mode = parseInt(match[1], 8)
+  switch (mode & 0o170000) {
+    case 0o100000: return (mode & 0o100) !== 0 ? 0o100755 : 0o100644
+    case 0o120000: return 0o120000
+    case 0o040000: return 0o040000
+    default: return 0o160000
+  }
 }
 
 /** The mode after the object names of an `index <old>..<new> <mode>` line, when git reads one (`apply.c` `gitdiff_index`). */
@@ -308,7 +339,7 @@ function unterminated(chunk: Chunk, key: 'oldUnterminated' | 'newUnterminated', 
   if (indices.at(-1) !== index) indices.push(index)
 }
 
-/** Build the file operation of one section, or `null` for a section without changes (a mode change only). */
+/** Build the file operation of one section, or `null` for a bare `---`/`+++` pair without hunks. */
 function toOp(section: Section): PatchOp | null {
   const { oldPath, newPath } = section
   if (section.newFile || (!section.git && oldPath === null && newPath != null)) {
