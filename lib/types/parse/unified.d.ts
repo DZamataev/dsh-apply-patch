@@ -5,13 +5,16 @@
  * or new lines, every ` `, `-` or `+` line is payload, also one that looks like
  * a `---`/`+++` file header, and a blank line is an empty context line.
  * `\ No newline at end of file` may follow any hunk line and removes the LF of
- * that line only, as in git. A CR before the LF belongs to the line, as in git. File headers and git metadata are recognized
- * only between hunks. The parser is lenient where models are sloppy, but never
- * so that lines are silently dropped:
+ * that line only, as in git. A CR before the LF belongs to the line, as in git.
+ * File headers and git metadata are recognized only between hunks; between a
+ * `+++` header and the first hunk only git header lines (`index`, modes,
+ * renames) of a `diff --git` section may stand, as for git. The parser is
+ * lenient where models are sloppy, but never so that lines are silently dropped:
  *
  * - text before the first header and between files (prose, a ```diff fence, `Index:` lines) is skipped;
  * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
  * - an unprefixed line inside a counted hunk, and a `-` or `+` line right after a hunk whose counts are reached, are rejected with their line number;
+ * - a line starting with `\` is a newline marker only as git reads one ({@link isMarker}); inside a hunk any other such line is rejected, after a hunk it is skipped like other text there;
  * - `@@ @@` and `@@` without line numbers are accepted; such a hunk ends at the first line that is not ` `, `-`, `+` or `\`, or at a `---`/`+++` pair;
  * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it) or at the end of the line; spaces around it are part of the path. Quoted C-style paths are decoded. A CR at the end of a header line is dropped.
  *

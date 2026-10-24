@@ -104,4 +104,19 @@ export const referenceCases: ReferenceCase[] = [
     name: 'lines of an applied hunk, its context included, are not matched again', format: 'unified',
     before: 'p\nA\nold\nB\nold2\nC\nz\n', patch: git('@@ -2,3 +2,3 @@\n A\n-old\n+new\n B\n@@ -4,3 +4,3 @@\n B\n-old2\n+new2\n C\n'), expected: { error: 'Could not find', code: 'PATCH_CONFLICT' },
   },
+
+  { name: 'a newline marker matches the unterminated last line of the file', format: 'unified', before: 'q\nold\nz\nq\nold\nz', patch: git('@@ -5,2 +5,2 @@\n-old\n+new\n z\n\\ No newline at end of file\n'), expected: 'q\nold\nz\nq\nnew\nz' },
+  {
+    name: 'a marked line that git would match against a terminated line nearer the header is refused (git joins the next line onto it)', format: 'unified',
+    before: 'q\nold\nz\nq\nold\nz', patch: git('@@ -2,2 +2,2 @@\n-old\n+new\n z\n\\ No newline at end of file\n'), expected: { error: 'join', code: 'PATCH_CONFLICT' }, stricter: true,
+  },
+  { name: 'a backslash line inside a hunk must be a newline marker', format: 'unified', before: 'a\n', patch: git('@@ -1 +1 @@\n-a\n\\ x\n+A\n'), expected: { error: 'No newline at end of file', code: 'PATCH_PARSE' } },
+  { name: 'a lone backslash inside a hunk is rejected', format: 'unified', before: 'a\n', patch: git('@@ -1 +1 @@\n-a\n\\\n+A\n'), expected: { error: 'No newline at end of file', code: 'PATCH_PARSE' } },
+  { name: 'a short backslash line at the end of the diff is not a newline marker', format: 'unified', before: 'a\n', patch: git('@@ -1 +1 @@\n-a\n+A\n\\ anything\n'), expected: 'A\n' },
+  { name: 'a lone backslash after the hunk is not a newline marker', format: 'unified', before: 'a\n', patch: git('@@ -1 +1 @@\n-a\n+A\n\\\n'), expected: 'A\n' },
+  { name: 'a translated newline marker is accepted', format: 'unified', before: 'a\n', patch: git('@@ -1 +1 @@\n-a\n+A\n\\ Kein Zeilenumbruch am Dateiende.\n'), expected: 'A' },
+  { name: 'text between the "+++" header and the first hunk is rejected', format: 'unified', before: 'a\n', patch: git('Here is the change:\n@@ -1 +1 @@\n-a\n+A\n'), expected: { error: 'between', code: 'PATCH_PARSE' } },
+  { name: 'a blank line between the "+++" header and the first hunk is rejected', format: 'unified', before: 'a\n', patch: git('\n@@ -1 +1 @@\n-a\n+A\n'), expected: { error: 'between', code: 'PATCH_PARSE' } },
+  { name: 'an index line after the "+++" header of a git diff is accepted', format: 'unified', before: 'a\n', patch: git('index 1..2 100644\n@@ -1 +1 @@\n-a\n+A\n'), expected: 'A\n' },
+  { name: 'an index line after the "+++" header of a plain diff is rejected', format: 'unified', before: 'a\n', patch: '--- a/f\n+++ b/f\nindex 1..2\n@@ -1 +1 @@\n-a\n+A\n', expected: { error: 'between', code: 'PATCH_PARSE' } },
 ]

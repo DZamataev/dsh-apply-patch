@@ -50,6 +50,14 @@ describe('parseUnifiedDiff', () => {
       .toEqual([['add', 'new.txt', 'a\nb\n'], ['add', 'e', ''], ['delete', 'old.txt', undefined], ['update', 'm.txt', 'n.txt']])
   })
 
+  it.each([
+    ['context lines', '--- /dev/null\n+++ b/f\n@@ -1,2 +1,3 @@\n a\n b\n+c\n'],
+    ['a line removed and added again', '--- /dev/null\n+++ b/f\n@@ -1 +1 @@\n-a\n+a\n'],
+    ['context lines after "new file mode"', 'diff --git a/f b/f\nnew file mode 100644\n--- a/f\n+++ b/f\n@@ -1 +1,2 @@\n a\n+b\n'],
+  ])('rejects a new file whose hunk has %s, as git does', (_name, diff) => {
+    expect(() => parseUnifiedDiff(diff)).toThrow('every line of a new file starts with "+"')
+  })
+
   it('patches the "+++" file of a bare diff with differing names instead of renaming', () => {
     const parsed = parseUnifiedDiff(['--- foo.c.orig\t2024-01-01 10:00:00', '+++ foo.c\t2024-01-02 10:00:00', '@@ -1 +1 @@', '-a', '+b'].join('\n'))
     expect(parsed.ops).toMatchObject([{ kind: 'update', path: 'foo.c' }])
