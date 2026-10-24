@@ -208,7 +208,7 @@ class Staging {
     const dir = await this.dir(target, signal)
     const path = posix.join(dir.path, String(dir.slots.length))
     const staged = await fsCall(() => this.fs.resolve(path, { signal }), path)
-    await checkShellSandbox(this.fs, this.policy, staged, path, 'stage')
+    await checkWritable(this.fs, this.policy, staged, path, 'stage')
     const slot: Slot = { place: { target: staged, path }, dir }
     dir.slots.push(slot)
     return slot
@@ -220,7 +220,7 @@ class Staging {
     if (known !== undefined && (known.state === 'new' || known.state === 'made')) return known
     const path = posix.join(parent, `${STAGING_PREFIX}${randomBytes(8).toString('hex')}`)
     const resolved = await fsCall(() => this.fs.resolve(path, { signal }), path)
-    await checkShellSandbox(this.fs, this.policy, resolved, path, 'stage')
+    await checkWritable(this.fs, this.policy, resolved, path, 'stage')
     const dir: StagingDir = { path, target: resolved, state: 'new', slots: [] }
     this.dirs.push(dir)
     this.current.set(parent, dir)
@@ -299,7 +299,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     if ((await fsCall(() => fs.lstat(path, at, signal), path))?.type === 'symlink') {
       throw new PatchError('PATCH_UNSUPPORTED', `Cannot ${verb} "${path}": it is a symbolic link, and apply_patch does not delete or move links. Use the shell to change the link itself.`)
     }
-    await checkShellSandbox(fs, sandboxPolicy, target, path, verb)
+    await checkWritable(fs, sandboxPolicy, target, path, verb)
   }
 
   const files: FileChange[] = []
@@ -311,6 +311,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     const place = { target, path: op.path }
     if (op.kind === 'add') {
       if (!await absent(op.path, target)) throw new PatchError('PATCH_CONFLICT', `Cannot add "${op.path}": it already exists. Read it and use "*** Update File:", or delete it first.`)
+      await checkWritable(fs, sandboxPolicy, target, op.path, 'add')
       writes.push({ kind: 'write', place, guard: { kind: 'createIfAbsent' }, before: null, after: op.content })
       files.push({ path: op.path, action: 'added', before: null, after: op.content })
       continue
@@ -335,7 +336,10 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     const before = await fsCall(() => readWhole(fs, target, signal), op.path)
     const after = op.chunks.length === 0 ? before : applyToFile(op.path, before, op.chunks, patch.format)
     if (op.moveTo === undefined) {
-      if (after !== before) writes.push({ kind: 'write', place, guard, before, after })
+      if (after !== before) {
+        await checkWritable(fs, sandboxPolicy, target, op.path, 'update')
+        writes.push({ kind: 'write', place, guard, before, after })
+      }
       files.push({ path: op.path, action: 'modified', before, after })
       continue
     }
@@ -343,7 +347,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     if (!await absent(op.moveTo, destination)) {
       throw new PatchError('PATCH_CONFLICT', `Cannot move "${op.path}" to "${op.moveTo}": the destination already exists.`)
     }
-    await checkShellSandbox(fs, sandboxPolicy, destination, op.moveTo, 'move a file to')
+    await checkWritable(fs, sandboxPolicy, destination, op.moveTo, 'move a file to')
     moves.push({ kind: 'move', source: place, destination: { target: destination, path: op.moveTo }, version: guard.version, before, after: after === before ? null : after })
     files.push({ path: op.moveTo, from: op.path, action: 'modified', before, after })
   }
@@ -762,13 +766,16 @@ async function writeGuard(ctx: Context, exec: ToolRunContext, target: FsTarget, 
 }
 
 /**
- * In `workspace-write` mode, refuse a shell change of a path outside the
- * workspace and the temp directories, the roots the DSH fs sandbox allows
- * writing. The shell that performs it may not confine it itself.
+ * In `workspace-write` mode, refuse a change of a path outside the workspace
+ * root, `/tmp` and `os.tmpdir()`: the writable roots of `writableRoots` in
+ * `@deepseek-ai/dsh-sandbox`, which the DSH fs sandbox checks on every write.
+ * Every write target, move destination and staging path is checked while
+ * preparing, so a dry run reports the denial; a shell that performs a change
+ * may not confine it itself.
  */
-async function checkShellSandbox(fs: FileSystem, policy: SandboxExecutionPolicy | undefined, target: FsTarget, path: string, verb: string): Promise<void> {
+async function checkWritable(fs: FileSystem, policy: SandboxExecutionPolicy | undefined, target: FsTarget, path: string, verb: string): Promise<void> {
   if (policy?.mode !== 'workspace-write') return
-  const roots = process.platform === 'win32' ? [policy.workspaceRoot, tmpdir()] : [policy.workspaceRoot, '/tmp', tmpdir()]
+  const roots = [policy.workspaceRoot, '/tmp', tmpdir()]
   for (const root of roots) {
     try {
       if (fs.contains(await fs.resolve(root), target)) return

@@ -269,15 +269,40 @@ describe('fs sandbox in workspace-write mode', () => {
     expect(existsSync(join(dir, 'n.txt'))).toBe(false)
   })
 
-  it('undoes earlier writes when the sandbox denies a later one', async () => {
+  it('refuses every write target outside the workspace up front, also in a dry run', async () => {
     const h = await open({ sandbox: 'workspace-write' })
     const dir = outside()
     writeFileSync(join(h.dir, 'a.txt'), 'a\n')
     await h.observe('a.txt')
-    await expect(h.run(patch('*** Update File: a.txt', '@@', '-a', '+A', '*** Add File: inside.txt', '+i', `*** Add File: ${join(dir, 'n.txt')}`, '+n')))
-      .rejects.toThrow('The 2 earlier change(s) of this patch were undone.')
+    writeFileSync(join(dir, 'o.txt'), 'o\n')
+    await h.observe(join(dir, 'o.txt'))
+    const cases = [
+      patch('*** Update File: a.txt', '@@', '-a', '+A', '*** Add File: inside.txt', '+i', `*** Add File: ${join(dir, 'n.txt')}`, '+n'),
+      patch('*** Update File: a.txt', '@@', '-a', '+A', `*** Update File: ${join(dir, 'o.txt')}`, '@@', '-o', '+O'),
+      patch(`*** Update File: a.txt`, `*** Move to: ${join(dir, 'moved.txt')}`, '@@', '-a', '+A'),
+    ]
+    for (const body of cases) {
+      for (const extra of [{ dry_run: true }, {}]) {
+        await expect(h.run(body, extra)).rejects.toMatchObject({
+          code: 'PATCH_SANDBOX',
+          message: expect.stringMatching(/^\[sandbox: file access denied under workspace-write mode\] Cannot [^\n]* outside the workspace /),
+        })
+      }
+    }
     expect(read(h, 'a.txt')).toBe('a\n')
+    expect(readFileSync(join(dir, 'o.txt'), 'utf8')).toBe('o\n')
     expect(exists(h, 'inside.txt')).toBe(false)
+    expect(existsSync(join(dir, 'n.txt'))).toBe(false)
+    expect(existsSync(join(dir, 'moved.txt'))).toBe(false)
+  })
+
+  it('allows writes in the temp directories under workspace-write', async () => {
+    const h = await open({ sandbox: 'workspace-write' })
+    const dir = mkdtempSync(join('/tmp', 'dsh-apply-patch-tmp-'))
+    opened.push({ dispose: async () => rmSync(dir, { recursive: true, force: true }) } as Harness)
+    await h.run(patch(`*** Add File: ${join(dir, 'n.txt')}`, '+n'), { dry_run: true })
+    await h.run(patch(`*** Add File: ${join(dir, 'n.txt')}`, '+n'))
+    expect(readFileSync(join(dir, 'n.txt'), 'utf8')).toBe('n\n')
   })
 
   it('denies removing a file outside the workspace before changing anything', async () => {
