@@ -404,14 +404,16 @@ export async function commitPatch(ctx: Context, exec: ToolRunContext, prepared: 
         failure = staged
       } else {
         const { slot, outcome } = staged
-        const version = outcome.kind === 'done' ? await holdingBytes(fs, slot.place.target, step.digest, outcome.version) : undefined
+        const version = outcome.kind === 'done' ? await holdingBytes(fs, slot.place.target, step.digest, outcome.version, signal) : undefined
         if (version !== undefined) {
           slot.held = { version, digest: step.digest }
           done.push({ kind: 'delete', step, slot, held: slot.held })
           continue
         }
         if (outcome.kind === 'done') {
-          failure = new PatchError('PATCH_STALE', `"${step.place.path}" changed while it was being deleted, or could not be checked.`)
+          failure = signal?.aborted === true
+            ? new PatchError('PATCH_IO', `Deleting "${step.place.path}" was aborted while its staged copy was being checked.`)
+            : new PatchError('PATCH_STALE', `"${step.place.path}" changed while it was being deleted, or could not be checked.`)
           if (await putBack(ctx, slot, step.place, outcome.version, policy)) {
             extra.push(`It was put back as it is now; read it again before retrying.`)
           } else {
@@ -702,20 +704,26 @@ function sha256(bytes: Uint8Array): string {
 }
 
 /**
- * The version of `target` and the SHA-256 of its bytes, read in windows, when
- * a stat before and after the read agree.
+ * The version of `target` and the SHA-256 of its bytes, read in windows up to
+ * the size the first stat reported, when that version holds before, between
+ * and after the windows. A file that changes during the read is reported as
+ * changed at the next window, so a file that keeps growing ends the read.
+ * @param signal - aborts the read; omitted only for bounded undo and cleanup checks.
  * @returns undefined for a missing file or when the version changed during the read.
- * @throws the filesystem's error when the file cannot be read.
+ * @throws the filesystem's error when the file cannot be read, or the abort reason.
  */
 async function fingerprint(fs: FileSystem, target: FsTarget, signal: AbortSignal | undefined): Promise<Held | undefined> {
   const first = await fs.stat(target, signal)
   if (first === undefined) return undefined
+  const size = first.size ?? Number.POSITIVE_INFINITY
   const hash = createHash('sha256')
-  for (let offset = 0; ;) {
-    const window = await fs.readByteRange(target, { offset, length: DIGEST_WINDOW }, signal)
+  for (let offset = 0; offset < size;) {
+    signal?.throwIfAborted()
+    const window = await fs.readByteRange(target, { offset, length: Math.min(DIGEST_WINDOW, size - offset) }, signal)
     if (window.length === 0) break
     hash.update(window)
     offset += window.length
+    if (offset < size && (await fs.stat(target, signal))?.version !== first.version) return undefined
   }
   return (await fs.stat(target, signal))?.version === first.version ? { version: first.version, digest: hash.digest('hex') } : undefined
 }
@@ -723,11 +731,12 @@ async function fingerprint(fs: FileSystem, target: FsTarget, signal: AbortSignal
 /**
  * The version of `target` when it holds bytes with SHA-256 `digest` at version
  * `expected` (see {@link fingerprint}).
- * @returns the version, or undefined when the file differs or cannot be checked.
+ * @param signal - the call's abort signal for a forward step; omitted while undoing and clearing staging.
+ * @returns the version, or undefined when the file differs, cannot be checked, or the check was aborted.
  */
-async function holdingBytes(fs: FileSystem, target: FsTarget, digest: string, expected: FsVersion): Promise<FsVersion | undefined> {
+async function holdingBytes(fs: FileSystem, target: FsTarget, digest: string, expected: FsVersion, signal?: AbortSignal): Promise<FsVersion | undefined> {
   try {
-    const print = await fingerprint(fs, target, undefined)
+    const print = await fingerprint(fs, target, signal)
     return print?.version === expected && print.digest === digest ? expected : undefined
   } catch {
     // A file that cannot be checked is not taken as this patch's.

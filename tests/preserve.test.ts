@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { harness } from './harness.js'
@@ -308,6 +308,55 @@ describe('staged files are verified', () => {
     expect(readdirSync(foreign).sort()).toEqual(['0', 'valuable'])
     expect(readFileSync(join(foreign, '0'), 'utf8')).toBe('unrelated slot\n')
     expect(staged(h)).toHaveLength(1)
+  })
+
+  /** Count the 1 MiB digest windows read after the first shell command (the staging relink); `during(n)` runs before window `n`. */
+  const windowsAfterStaging = (h: Harness, during: (n: number) => void) => {
+    let staged = false
+    let windows = 0
+    h.mapShell((result, n) => {
+      if (n === 1) staged = true
+      return result
+    })
+    const original = h.fs.readByteRange.bind(h.fs)
+    h.fs.readByteRange = async (target, range, signal) => {
+      if (staged && range.length === 1 << 20) during(++windows)
+      return original(target, range, signal)
+    }
+    return () => windows
+  }
+
+  it('stops verifying a staged file that keeps growing as soon as its version changes', async () => {
+    const h = await open()
+    const block = Buffer.alloc(1 << 20, 0xa5)
+    writeFileSync(join(h.dir, 'big'), Buffer.concat([block, block, block]))
+    await h.observe('big')
+    const windows = windowsAfterStaging(h, () => {
+      const [dir] = staged(h)
+      appendFileSync(join(h.dir, dir, '0'), block)
+    })
+    const error = await h.run(patch('*** Delete File: big')).catch((e: Error) => e)
+    expect(error).toMatchObject({ code: 'PATCH_STALE' })
+    expect(windows()).toBeLessThanOrEqual(2)
+    // Still growing, the staged file cannot be put back at its read version; it is kept and named.
+    const [dir] = staged(h)
+    expect(String(error)).toContain(`It is kept, as it is now, at "${join(h.dir, dir, '0')}"`)
+  })
+
+  it('stops verifying a staged file when the call is aborted, and puts the file back', async () => {
+    const h = await open()
+    const block = Buffer.alloc(1 << 20, 0x5a)
+    const content = Buffer.concat([block, block, block, block])
+    writeFileSync(join(h.dir, 'big'), content)
+    await h.observe('big')
+    const abort = new AbortController()
+    const windows = windowsAfterStaging(h, n => {
+      if (n === 1) abort.abort()
+    })
+    await expect(h.run(patch('*** Delete File: big'), {}, abort.signal)).rejects.toBeInstanceOf(Error)
+    expect(windows()).toBeLessThanOrEqual(2)
+    expect(bytes(h, 'big')).toEqual(content)
+    expect(staged(h)).toEqual([])
   })
 
   it('does not remove a staging directory whose creation it could not confirm', async () => {
