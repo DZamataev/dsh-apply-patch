@@ -38,7 +38,7 @@ const CODEX_FORMAT = `Edit files with a patch in this format:
 
 - "*** Update File:" may be followed by "*** Move to: new/path" to rename the file.
 - Each change starts with "@@", optionally followed by a line of the file (a class or function header) that comes before the change; repeat "@@ line" to narrow it further. Then list about 3 unchanged lines before and after the change with a leading space, removed lines with "-", added lines with "+".
-- "*** End of File" after a change pins it to the end of the file. A change with only "+" lines is added at the end of the file; to insert elsewhere, include an unchanged line before it.
+- "*** End of File" after a change pins it to the end of the file, unless all its unchanged and removed lines are blank (then it is inserted at the current position). A change with only "+" lines is added at the end of the file; to insert elsewhere, include an unchanged line before it.
 - Every line of an added file starts with "+".
 - Paths are relative to the working directory, or absolute.
 - Read a file with the read tool before updating, moving or deleting it.

@@ -252,3 +252,93 @@ describe('undoing an added file', () => {
     expect(readFileSync(join(h.dir, dir, '0'), 'utf8')).toBe('ours\n')
   })
 })
+
+describe('staged files are verified', () => {
+  it('puts a file edited in place while it is being staged back, and does not report it deleted', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'f'), 'read version\n')
+    await h.observe('f')
+    fakeLn(h, `/bin/ln "$@" || exit 1; printf 'edited in place\\n' > "$2"`)
+    const error = await h.run(patch('*** Delete File: f')).catch((e: Error) => e)
+    expect(error).toMatchObject({ code: 'PATCH_STALE', message: expect.stringContaining('"f" changed while it was being deleted') })
+    expect(String(error)).toContain('It was put back as it is now')
+    expect(bytes(h, 'f')).toEqual(Buffer.from('edited in place\n'))
+    expect(staged(h)).toEqual([])
+  })
+
+  it('keeps a staged file edited after staging and names it instead of removing it', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'a'), 'a\n')
+    writeFileSync(join(h.dir, 'b'), 'b\n')
+    await h.observe('a')
+    await h.observe('b')
+    h.mapShell((result, n) => {
+      if (n === 2) {
+        const [dir] = staged(h)
+        writeFileSync(join(h.dir, dir, '0'), 'edited after staging\n')
+      }
+      return result
+    })
+    const result = await h.run(patch('*** Delete File: a', '*** Delete File: b')) as { summary: string }
+    const [dir] = staged(h)
+    expect(result.summary).toContain(`"${join(h.dir, dir, '0')}" changed after this patch staged it, so it was kept`)
+    expect(readdirSync(join(h.dir, dir))).toEqual(['0'])
+    expect(readFileSync(join(h.dir, dir, '0'), 'utf8')).toBe('edited after staging\n')
+    expect(existsSync(join(h.dir, 'b'))).toBe(false)
+  })
+
+  it('never takes over a staging directory that exists already', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'source'), 'source\n')
+    await h.observe('source')
+    let foreign = ''
+    const shell = h.ctx.get('shell') as { execute(spec: { env?: Record<string, string> }): Promise<unknown> }
+    const execute = shell.execute.bind(shell)
+    shell.execute = spec => {
+      if (foreign === '' && spec.env?.DSH_APPLY_PATCH_MKDIR === 'private') {
+        foreign = join(spec.env.DSH_APPLY_PATCH_TO, '..')
+        mkdirSync(foreign, { mode: 0o700 })
+        writeFileSync(join(foreign, 'valuable'), 'unrelated work\n')
+        writeFileSync(join(foreign, '0'), 'unrelated slot\n')
+      }
+      return execute(spec)
+    }
+    await h.run(patch('*** Delete File: source'))
+    expect(existsSync(join(h.dir, 'source'))).toBe(false)
+    expect(readdirSync(foreign).sort()).toEqual(['0', 'valuable'])
+    expect(readFileSync(join(foreign, '0'), 'utf8')).toBe('unrelated slot\n')
+    expect(staged(h)).toHaveLength(1)
+  })
+
+  it('does not remove a staging directory whose creation it could not confirm', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'f'), 'f\n')
+    await h.observe('f')
+    h.mapShell((result, n) => n === 1 ? { ...result, exitCode: null, aborted: true } : result)
+    const result = await h.run(patch('*** Delete File: f')) as { summary: string }
+    const [dir] = staged(h)
+    expect(readdirSync(join(h.dir, dir))).toEqual([])
+    expect(result.summary).toContain(`"${join(h.dir, dir)}" may have been left by this patch`)
+  })
+})
+
+describe('an undone move', () => {
+  it('is not reported undone when the file put back changed right after', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'src'), 'original\n')
+    await h.observe('src')
+    mkdirSync(join(h.dir, 'locked'))
+    writeFileSync(join(h.dir, 'locked/f'), 'f\n')
+    await h.observe('locked/f')
+    chmodSync(join(h.dir, 'locked'), 0o500)
+    locked.push(join(h.dir, 'locked'))
+    h.mapShell((result, n) => {
+      if (n === 3) writeFileSync(join(h.dir, 'src'), 'edited after the undo\n')
+      return result
+    })
+    const error = await h.run(patch('*** Update File: src', '*** Move to: dest', '*** Delete File: locked/f')).catch((e: Error) => e)
+    expect(String(error)).not.toContain('were undone')
+    expect(String(error)).toContain('"src" was moved back from "dest", but it changed right after or could not be checked')
+    expect(bytes(h, 'src')).toEqual(Buffer.from('edited after the undo\n'))
+  })
+})

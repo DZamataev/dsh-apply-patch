@@ -30,11 +30,16 @@
  *   directories are created first). With changes, the new text is then written
  *   to the destination, guarded by the version the move left.
  * - Delete File: the file is relinked into a private staging directory next to
- *   it (`.dsh-apply-patch-trash-<random>`, mode 700). The staging directories
- *   are removed only after the whole patch succeeded; an undo relinks the file
- *   back, so any file, binary included, is restored byte for byte with its mode.
- * - Undoing an added file relinks it into staging too, and staging is removed
- *   after the undo; undoing a move relinks the destination back to the source.
+ *   it (`.dsh-apply-patch-trash-<random>`, mode 700, made by this patch's own
+ *   `mkdir`; a name that exists already is never used). The staged file must
+ *   hold the bytes checked while preparing (SHA-256), or it is put back (or
+ *   kept and named) and the patch fails. Staged files are removed only after
+ *   the whole patch succeeded, each after checking its bytes again, and then
+ *   their empty directory; an undo relinks the file back, so any file, binary
+ *   included, is restored byte for byte with its mode.
+ * - Undoing an added file relinks it into staging too, verified against the
+ *   text written, and removed after the undo; undoing a move relinks the
+ *   destination back to the source and checks its text.
  *
  * Each relink stats the old name just before the command and runs only if it is
  * still the expected version, then stats both names to learn the outcome,
@@ -47,7 +52,7 @@
  * @module dsh-apply-patch/apply/engine
  */
 
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { posix } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
@@ -78,8 +83,8 @@ interface Place { target: FsTarget; path: string }
 interface WriteStep { kind: 'write'; place: Place; guard: FsWriteIntent; before: string | null; after: string }
 /** A move of the source at `version`; `after` is the text to write at the destination, null to keep the bytes. */
 interface MoveStep { kind: 'move'; source: Place; destination: Place; version: FsVersion; before: string; after: string | null }
-/** A deletion of the file at `version`: it is relinked to `staged`. */
-interface DeleteStep { kind: 'delete'; place: Place; version: FsVersion; staged: Slot }
+/** A deletion of the file at `version` whose bytes have SHA-256 `digest`: it is relinked into staging. */
+interface DeleteStep { kind: 'delete'; place: Place; version: FsVersion; digest: string }
 type Step = WriteStep | MoveStep | DeleteStep
 
 /** A checked patch, ready to commit. */
@@ -95,8 +100,8 @@ type Done =
   | { kind: 'write'; step: WriteStep; version: FsVersion }
   /** `moved`: the destination's version after the relink; `written`: after writing the new text. */
   | { kind: 'move'; step: MoveStep; moved: FsVersion; written?: FsVersion }
-  /** `staged`: the staged file's version after the relink. */
-  | { kind: 'delete'; step: DeleteStep; staged: FsVersion }
+  /** `slot`: where the file was staged and verified. */
+  | { kind: 'delete'; step: DeleteStep; slot: Slot; held: Held }
 
 /** Outcome of a guarded relink. */
 type Relink =
@@ -112,6 +117,11 @@ type Relink =
   | { kind: 'split' }
   /** The state of the two names could not be determined. */
   | { kind: 'unknown'; reason: string }
+  /** The staging directory to create exists already; nothing was changed. */
+  | { kind: 'collision' }
+
+/** A relink's outcome and the command's exit code: undefined when unknown, `not run` when the old name had changed. */
+interface RelinkRun { outcome: Relink; exit: number | undefined | 'not run' }
 
 const SHELL_TIMEOUT_MS = 30_000
 const POSIX = process.platform !== 'win32'
@@ -124,14 +134,17 @@ const STAGING_PREFIX = '.dsh-apply-patch-trash-'
  * exist, with mode 700) or empty. The link is made with `ln`, which fails on an
  * existing name; the old name is removed only while it still names the linked
  * file, and the new name is removed again when that removal fails. Exit codes:
- * 90 directory, 91 old name not a regular file, 92 new name exists, 93 link
- * failed, 94 old name replaced after linking, 95 old name not removed.
+ * 89 private directory exists, 90 directory not created, 91 old name not a
+ * regular file, 92 new name exists, 93 link failed, 94 old name replaced after
+ * linking, 95 old name not removed. Any other exit code means this command
+ * created the private directory.
  */
 const RELINK = [
   'f=$DSH_APPLY_PATCH_FROM; t=$DSH_APPLY_PATCH_TO',
   'case "$DSH_APPLY_PATCH_MKDIR" in',
   'parents) mkdir -p -- "${t%/*}" || exit 90 ;;',
-  'private) mkdir -m 700 -- "${t%/*}" || exit 90 ;;',
+  'private) if [ -e "${t%/*}" ] || [ -L "${t%/*}" ]; then exit 89; fi',
+  '  mkdir -m 700 -- "${t%/*}" || exit 90 ;;',
   'esac',
   '[ -f "$f" ] && [ ! -L "$f" ] || exit 91',
   '[ -e "$t" ] || [ -L "$t" ] && exit 92',
@@ -141,11 +154,12 @@ const RELINK = [
   '[ "$f" -ef "$t" ] && rm -f -- "$t"',
   'exit 95',
 ].join('\n')
-/** Remove the staging directory `$DSH_APPLY_PATCH_TO` with its files. */
-const DISCARD_DIR = 'rm -rf -- "$DSH_APPLY_PATCH_TO"'
+/** Remove the staging directory `$DSH_APPLY_PATCH_TO` if it is empty. */
+const DISCARD_DIR = 'rmdir -- "$DSH_APPLY_PATCH_TO"'
 /** Remove the staged file `$DSH_APPLY_PATCH_TO`. */
 const DISCARD_FILE = 'rm -f -- "$DSH_APPLY_PATCH_TO"'
 const RELINK_FAILURES: Record<number, string> = {
+  89: 'the staging directory name is taken',
   90: 'its directory could not be created',
   91: 'it is no longer a regular file',
   92: 'the new name exists',
@@ -156,36 +170,87 @@ const RELINK_FAILURES: Record<number, string> = {
 interface WorkingDirectory { ensure(agent: NonNullable<ToolRunContext['agent']>, signal?: AbortSignal): Promise<string> }
 interface SandboxPolicyService { resolve(request?: { session?: unknown }): SandboxExecutionPolicy }
 
-/** A staged file: a name inside a staging directory. */
-interface Slot { place: Place; dir: StagingDir }
-interface StagingDir { path: string; target: FsTarget; made: boolean; slots: number }
-
+/** A file this patch put into a staging slot: the version it had then and the SHA-256 of its bytes. */
+interface Held { version: FsVersion; digest: string }
+/** A name inside a staging directory; `held` while it holds a verified file of this patch. */
+interface Slot { place: Place; dir: StagingDir; held?: Held }
 /**
- * Staging directories, one per parent directory of a staged file, created by
- * the first relink into them.
+ * A staging directory. `state`: `new` before the first relink into it, `made`
+ * when that relink's own `mkdir` created it, `foreign` when it was not created
+ * by it (the name existed, or `mkdir` failed), `unknown` when the outcome is
+ * unknown. Only a `made` directory is removed, and only when it is empty.
  */
+interface StagingDir { path: string; target: FsTarget; state: 'new' | 'made' | 'foreign' | 'unknown'; slots: Slot[] }
+
+/** Attempts with fresh random names when a staging directory name exists already. */
+const STAGING_ATTEMPTS = 3
+
+/** Staging directories, one in use per parent directory of a staged file. */
 class Staging {
-  readonly dirs = new Map<string, StagingDir>()
+  readonly dirs: StagingDir[] = []
+  private readonly current = new Map<string, StagingDir>()
   constructor(private readonly fs: FileSystem, private readonly policy: SandboxExecutionPolicy | undefined) {}
 
   /**
-   * A fresh name in the staging directory next to `target`.
-   * @throws {@link PatchError} when the name is outside what the sandbox allows.
+   * Check that a file next to `target` may be staged.
+   * @throws {@link PatchError} when staging there is outside what the sandbox allows.
+   */
+  async check(target: FsTarget, signal?: AbortSignal): Promise<void> {
+    await this.dir(target, signal)
+  }
+
+  /**
+   * A fresh name in the staging directory next to `target`, in a new directory
+   * when the current one is not usable (`foreign` or `unknown`).
+   * @throws {@link PatchError} when the name cannot be resolved or is outside what the sandbox allows.
    */
   async slot(target: FsTarget, signal?: AbortSignal): Promise<Slot> {
-    const parent = posix.dirname(this.fs.processPath(target))
-    let dir = this.dirs.get(parent)
-    if (dir === undefined) {
-      const path = posix.join(parent, `${STAGING_PREFIX}${randomBytes(8).toString('hex')}`)
-      dir = { path, target: await fsCall(() => this.fs.resolve(path, { signal }), path), made: false, slots: 0 }
-      this.dirs.set(parent, dir)
-    }
-    const path = posix.join(dir.path, String(dir.slots))
-    dir.slots += 1
+    const dir = await this.dir(target, signal)
+    const path = posix.join(dir.path, String(dir.slots.length))
     const staged = await fsCall(() => this.fs.resolve(path, { signal }), path)
     await checkShellSandbox(this.fs, this.policy, staged, path, 'stage')
-    return { place: { target: staged, path }, dir }
+    const slot: Slot = { place: { target: staged, path }, dir }
+    dir.slots.push(slot)
+    return slot
   }
+
+  private async dir(target: FsTarget, signal: AbortSignal | undefined): Promise<StagingDir> {
+    const parent = posix.dirname(this.fs.processPath(target))
+    const known = this.current.get(parent)
+    if (known !== undefined && (known.state === 'new' || known.state === 'made')) return known
+    const path = posix.join(parent, `${STAGING_PREFIX}${randomBytes(8).toString('hex')}`)
+    const resolved = await fsCall(() => this.fs.resolve(path, { signal }), path)
+    await checkShellSandbox(this.fs, this.policy, resolved, path, 'stage')
+    const dir: StagingDir = { path, target: resolved, state: 'new', slots: [] }
+    this.dirs.push(dir)
+    this.current.set(parent, dir)
+    return dir
+  }
+}
+
+/**
+ * Relink `from`, if it is still at `version`, into a fresh staging slot. A
+ * staging directory is used only when this relink created it; when its name
+ * exists already, a new random name is tried, up to {@link STAGING_ATTEMPTS}.
+ * @throws {@link PatchError} when no slot can be resolved.
+ */
+async function stage(ctx: Context, staging: Staging, from: Place, version: FsVersion, signal: AbortSignal | undefined, policy: SandboxExecutionPolicy | undefined): Promise<{ slot: Slot; outcome: Relink }> {
+  for (let attempt = 1; ; attempt += 1) {
+    const slot = await staging.slot(from.target, signal)
+    const fresh = slot.dir.state === 'new'
+    const { outcome, exit } = await relink(ctx, from, slot.place, version, fresh ? 'private' : '', signal, policy)
+    if (fresh && exit !== 'not run') slot.dir.state = exit === undefined ? 'unknown' : exit === 89 || exit === 90 ? 'foreign' : 'made'
+    if (outcome.kind !== 'collision' || attempt === STAGING_ATTEMPTS) return { slot, outcome }
+  }
+}
+
+/**
+ * Relink a staged file whose bytes are not the expected ones back to `place`,
+ * if it is still at `version` and the name is free.
+ * @returns whether it is back at `place`.
+ */
+async function putBack(ctx: Context, slot: Slot, place: Place, version: FsVersion, policy: SandboxExecutionPolicy | undefined): Promise<boolean> {
+  return (await relink(ctx, slot.place, place, version, '', undefined, policy)).outcome.kind === 'done'
 }
 
 /**
@@ -260,7 +325,10 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
       if (op.chunks !== undefined && before !== null && !['', BOM].includes(applyToFile(op.path, before, op.chunks, 'unified'))) {
         throw new PatchError('PATCH_CONFLICT', `The diff deletes "${op.path}", but its hunks do not remove the whole file. Read the file again and list every line of it as removed.`)
       }
-      deletes.push({ kind: 'delete', place, version: guard.version, staged: await staging.slot(target, signal) })
+      const print = await fsCall(() => fingerprint(fs, target, signal), op.path)
+      if (print?.version !== guard.version) throw new PatchError('PATCH_STALE', `"${op.path}" changed while the patch was being checked. Read it again and retry.`)
+      await staging.check(target, signal)
+      deletes.push({ kind: 'delete', place, version: guard.version, digest: print.digest })
       files.push({ path: op.path, action: 'deleted', before, after: null })
       continue
     }
@@ -307,7 +375,7 @@ export async function commitPatch(ctx: Context, exec: ToolRunContext, prepared: 
       }
       failure = written
     } else if (step.kind === 'move') {
-      const relinked = await relink(ctx, prepared.staging, step.source, step.destination, step.version, 'parents', signal, policy)
+      const relinked = (await relink(ctx, step.source, step.destination, step.version, 'parents', signal, policy)).outcome
       const moved = relinked.kind === 'done' ? await holding(fs, step.destination.target, step.before) : undefined
       if (moved !== undefined) {
         if (step.after === null) {
@@ -331,15 +399,32 @@ export async function commitPatch(ctx: Context, exec: ToolRunContext, prepared: 
         if (moved.kind === 'unknown') extra.push(`The state of "${step.source.path}" and "${step.destination.path}" is unknown; check them before retrying.`)
       }
     } else {
-      const staged = await relink(ctx, prepared.staging, step.place, step.staged.place, step.version, mkdirFor(step.staged), signal, policy)
-      if (staged.kind === 'done') {
-        done.push({ kind: 'delete', step, staged: staged.version })
-        continue
+      const staged = await stage(ctx, prepared.staging, step.place, step.version, signal, policy).catch((error: unknown) => toPatchError(error, step.place.path, policy))
+      if (staged instanceof PatchError) {
+        failure = staged
+      } else {
+        const { slot, outcome } = staged
+        const version = outcome.kind === 'done' ? await holdingBytes(fs, slot.place.target, step.digest, outcome.version) : undefined
+        if (version !== undefined) {
+          slot.held = { version, digest: step.digest }
+          done.push({ kind: 'delete', step, slot, held: slot.held })
+          continue
+        }
+        if (outcome.kind === 'done') {
+          failure = new PatchError('PATCH_STALE', `"${step.place.path}" changed while it was being deleted, or could not be checked.`)
+          if (await putBack(ctx, slot, step.place, outcome.version, policy)) {
+            extra.push(`It was put back as it is now; read it again before retrying.`)
+          } else {
+            extra.push(`It is kept, as it is now, at "${slot.place.path}"; check it before retrying.`)
+            kept.add(slot)
+          }
+        } else {
+          failure = relinkFailure(outcome, step.place.path, `Deleting "${step.place.path}"`)
+          if (outcome.kind === 'split') extra.push(`"${step.place.path}" was kept; the version this session read is kept at "${slot.place.path}".`)
+          if (outcome.kind === 'unknown') extra.push(`The state of "${step.place.path}" is unknown; check it, and "${slot.place.path}", before retrying.`)
+          if (outcome.kind === 'split' || outcome.kind === 'unknown') kept.add(slot)
+        }
       }
-      failure = relinkFailure(staged, step.place.path, `Deleting "${step.place.path}"`)
-      if (staged.kind === 'split') extra.push(`"${step.place.path}" was kept; the version this session read is kept at "${step.staged.place.path}".`)
-      if (staged.kind === 'unknown') extra.push(`The state of "${step.place.path}" is unknown; check it, and "${step.staged.place.path}", before retrying.`)
-      if (staged.kind === 'split' || staged.kind === 'unknown') kept.add(step.staged)
     }
     const undo = await rollback(ctx, exec, prepared.staging, done, kept, policy)
     const lines = [failure.message, ...extra]
@@ -352,7 +437,7 @@ export async function commitPatch(ctx: Context, exec: ToolRunContext, prepared: 
     }
     throw new PatchError(failure.code, lines.join('\n'), { cause: failure })
   }
-  const notes = await clearStaging(ctx, prepared.staging, new Set(), undefined, policy)
+  const notes = await clearStaging(ctx, prepared.staging, new Set(), policy)
   for (const entry of done) {
     switch (entry.kind) {
       case 'write':
@@ -372,14 +457,13 @@ export async function commitPatch(ctx: Context, exec: ToolRunContext, prepared: 
 
 /**
  * Undo done steps in reverse order, without the call's abort signal, publish
- * observations for the files put back, and remove the staging directories
- * except for the staged files in `kept` or that could not be put back.
- * @returns one note per file whose undo was incomplete.
+ * observations for the files put back (only after checking their content),
+ * and clear staging except for the slots in `kept` or that could not be put back.
+ * @returns one note per file whose undo was incomplete or could not be verified.
  */
 async function rollback(ctx: Context, exec: ToolRunContext, staging: Staging, done: readonly Done[], kept: Set<Slot>, policy: SandboxExecutionPolicy | undefined): Promise<string[]> {
   const fs = ctx.fs as FileSystem
   const notes: string[] = []
-  const discard = new Set<Slot>()
   const changedNote = (path: string) => `"${path}" was changed after this patch wrote it; it was left as it is.`
   /** Write `text` back over our version; the new version, or undefined with a note. */
   const restoreText = async (place: Place, text: string, version: FsVersion): Promise<FsVersion | undefined> => {
@@ -397,15 +481,24 @@ async function rollback(ctx: Context, exec: ToolRunContext, staging: Staging, do
           if (version !== undefined) observe(ctx, exec, place.target, { kind: 'present', version })
           break
         }
-        const slot = await staging.slot(place.target).catch((error: unknown) => toPatchError(error, place.path, policy))
-        if (slot instanceof PatchError) {
-          notes.push(`"${place.path}" was created by this patch and could not be removed: ${slot.message}`)
+        const staged = await stage(ctx, staging, place, entry.version, undefined, policy).catch((error: unknown) => toPatchError(error, place.path, policy))
+        if (staged instanceof PatchError) {
+          notes.push(`"${place.path}" was created by this patch and could not be removed: ${staged.message}`)
           break
         }
-        const removed = await relink(ctx, staging, place, slot.place, entry.version, mkdirFor(slot), undefined, policy)
+        const { slot, outcome: removed } = staged
         if (removed.kind === 'done') {
-          discard.add(slot)
-          if (!removed.fromBack) observe(ctx, exec, place.target, { kind: 'absent' })
+          const digest = sha256(Buffer.from(entry.step.after, 'utf8'))
+          const version = await holdingBytes(fs, slot.place.target, digest, removed.version)
+          if (version !== undefined) {
+            slot.held = { version, digest }
+            if (!removed.fromBack) observe(ctx, exec, place.target, { kind: 'absent' })
+          } else if (await putBack(ctx, slot, place, removed.version, policy)) {
+            notes.push(changedNote(place.path))
+          } else {
+            kept.add(slot)
+            notes.push(`"${place.path}" was changed while it was being removed; it is kept, as it is now, at "${slot.place.path}".`)
+          }
           break
         }
         if (removed.kind === 'split') kept.add(slot)
@@ -424,11 +517,12 @@ async function rollback(ctx: Context, exec: ToolRunContext, staging: Staging, do
           notes.push(`The moved file is kept at "${destination.path}".`)
           break
         }
-        const back = await relink(ctx, staging, destination, source, version, '', undefined, policy)
+        const back = (await relink(ctx, destination, source, version, '', undefined, policy)).outcome
         if (back.kind === 'done') {
           const restored = await holding(fs, source.target, before)
-          if (restored !== undefined) observe(ctx, exec, source.target, { kind: 'present', version: restored })
           if (!back.fromBack) observe(ctx, exec, destination.target, { kind: 'absent' })
+          if (restored !== undefined) observe(ctx, exec, source.target, { kind: 'present', version: restored })
+          else notes.push(`"${source.path}" was moved back from "${destination.path}", but it changed right after or could not be checked; check it before retrying.`)
           break
         }
         notes.push(back.kind === 'occupied'
@@ -441,79 +535,93 @@ async function rollback(ctx: Context, exec: ToolRunContext, staging: Staging, do
         break
       }
       case 'delete': {
-        const { place, staged } = entry.step
-        const back = await relink(ctx, staging, staged.place, place, entry.staged, '', undefined, policy)
+        const { place, digest } = entry.step
+        const { slot, held } = entry
+        const back = (await relink(ctx, slot.place, place, held.version, '', undefined, policy)).outcome
         if (back.kind === 'done') {
-          observe(ctx, exec, place.target, { kind: 'present', version: back.version })
+          slot.held = undefined
+          const restored = await holdingBytes(fs, place.target, digest, back.version)
+          if (restored !== undefined) observe(ctx, exec, place.target, { kind: 'present', version: restored })
+          else notes.push(`"${place.path}" was put back, but it changed right after or could not be checked; check it before retrying.`)
           break
         }
-        kept.add(staged)
+        kept.add(slot)
         notes.push(back.kind === 'occupied'
-          ? `"${place.path}" was created again by someone else; the deleted file is kept at "${staged.place.path}".`
-          : `"${place.path}" could not be restored (${relinkReason(back)}); the deleted file is kept at "${staged.place.path}".`)
+          ? `"${place.path}" was created again by someone else; the deleted file is kept at "${slot.place.path}".`
+          : `"${place.path}" could not be restored (${relinkReason(back)}); the deleted file is kept at "${slot.place.path}".`)
         break
       }
     }
   }
-  notes.push(...await clearStaging(ctx, staging, kept, discard, policy))
+  notes.push(...await clearStaging(ctx, staging, kept, policy))
   return notes
 }
 
 /**
- * Remove the staging directories made, keeping the slots in `kept`: a
- * directory with a kept slot loses only its slots in `discard` (all others
- * after a successful patch, where `discard` is undefined).
- * @returns notes on staged files that could not be removed.
+ * Remove the files this patch staged, except the slots in `kept`, each only
+ * after checking again that it holds the verified version and bytes, and then
+ * every staging directory this patch made that is left empty. A staged file
+ * that changed is kept and named; nothing else in a staging directory is
+ * removed.
+ * @returns notes on staged files and directories that were kept or could not be removed.
  */
-async function clearStaging(ctx: Context, staging: Staging, kept: ReadonlySet<Slot>, discard: ReadonlySet<Slot> | undefined, policy: SandboxExecutionPolicy | undefined): Promise<string[]> {
+async function clearStaging(ctx: Context, staging: Staging, kept: ReadonlySet<Slot>, policy: SandboxExecutionPolicy | undefined): Promise<string[]> {
   const fs = ctx.fs as FileSystem
   const notes: string[] = []
-  const keptDirs = new Set([...kept].map(slot => slot.dir))
-  for (const dir of staging.dirs.values()) {
-    if (!dir.made) continue
-    if (!keptDirs.has(dir)) {
-      const run = await runShell(ctx, DISCARD_DIR, { DSH_APPLY_PATCH_TO: fs.processPath(dir.target) }, undefined, policy)
-      if (!run.clean) notes.push(`The staging directory "${dir.path}" could not be removed (${run.reason}); it holds only copies of files this patch deleted or created. Remove it.`)
-      continue
-    }
-    for (const slot of discard ?? []) {
-      if (slot.dir !== dir) continue
+  for (const dir of staging.dirs) {
+    let empty = true
+    for (const slot of dir.slots) {
+      if (kept.has(slot)) {
+        empty = false
+        continue
+      }
+      if (slot.held === undefined) continue
+      if (await holdingBytes(fs, slot.place.target, slot.held.digest, slot.held.version) === undefined) {
+        empty = false
+        notes.push(`"${slot.place.path}" changed after this patch staged it, so it was kept: it is a file this patch deleted or created, as changed since. Check it, then remove it.`)
+        continue
+      }
       const run = await runShell(ctx, DISCARD_FILE, { DSH_APPLY_PATCH_TO: fs.processPath(slot.place.target) }, undefined, policy)
-      if (!run.clean) notes.push(`"${slot.place.path}" could not be removed (${run.reason}). Remove it.`)
+      if (!run.clean) {
+        empty = false
+        notes.push(`"${slot.place.path}" could not be removed (${run.reason}); it is a copy of a file this patch deleted or created. Remove it.`)
+        continue
+      }
+      slot.held = undefined
+    }
+    if (!empty) continue
+    if (dir.state === 'made') {
+      const run = await runShell(ctx, DISCARD_DIR, { DSH_APPLY_PATCH_TO: fs.processPath(dir.target) }, undefined, policy)
+      if (!run.clean) notes.push(`The staging directory "${dir.path}" could not be removed (${run.reason}). Remove it when it is empty.`)
+    } else if (dir.state === 'unknown' && await fs.stat(dir.target).then(info => info !== undefined, () => true)) {
+      notes.push(`The staging directory "${dir.path}" may have been left by this patch (whether this patch created it is unknown); remove it if it is empty.`)
     }
   }
   return notes
 }
 
-/** The mkdir mode for the first relink into a staging directory. */
-function mkdirFor(slot: Slot): 'private' | '' {
-  return slot.dir.made ? '' : 'private'
-}
-
 /**
  * Relink `from`, if it is still at `version`, to `to` with {@link RELINK},
- * then stat both names to learn the outcome. A staging directory the command
- * made is recorded in `staging`.
+ * then stat both names to learn the outcome.
  */
-async function relink(ctx: Context, staging: Staging, from: Place, to: Place, version: FsVersion, mkdir: 'parents' | 'private' | '', signal: AbortSignal | undefined, policy: SandboxExecutionPolicy | undefined): Promise<Relink> {
+async function relink(ctx: Context, from: Place, to: Place, version: FsVersion, mkdir: 'parents' | 'private' | '', signal: AbortSignal | undefined, policy: SandboxExecutionPolicy | undefined): Promise<RelinkRun> {
   const fs = ctx.fs as FileSystem
   try {
     const now = await fs.stat(from.target)
-    if (now?.version !== version) return { kind: 'changed', gone: now === undefined }
+    if (now?.version !== version) return { outcome: { kind: 'changed', gone: now === undefined }, exit: 'not run' }
   } catch (error: unknown) {
-    return { kind: 'failed', code: 'PATCH_IO', reason: `checking "${from.path}" failed: ${describe(error)}` }
+    return { outcome: { kind: 'failed', code: 'PATCH_IO', reason: `checking "${from.path}" failed: ${describe(error)}` }, exit: 'not run' }
   }
   const run = await runShell(ctx, RELINK, {
     DSH_APPLY_PATCH_FROM: fs.processPath(from.target),
     DSH_APPLY_PATCH_TO: fs.processPath(to.target),
     DSH_APPLY_PATCH_MKDIR: mkdir,
   }, signal, policy)
-  if (mkdir === 'private') {
-    for (const dir of staging.dirs.values()) {
-      if (dir.made || fs.processPath(dir.target) !== posix.dirname(fs.processPath(to.target))) continue
-      dir.made = await fs.stat(dir.target).then(info => info !== undefined, () => true)
-    }
-  }
+  return { outcome: await relinkOutcome(fs, from, to, run), exit: run.exitCode }
+}
+
+/** The outcome of a {@link RELINK} run, from its exit code and a stat of both names. */
+async function relinkOutcome(fs: FileSystem, from: Place, to: Place, run: ShellRun): Promise<Relink> {
   let source: FsInfo | undefined
   let target: FsInfo | undefined
   try {
@@ -524,8 +632,10 @@ async function relink(ctx: Context, staging: Staging, from: Place, to: Place, ve
   }
   const known = run.exitCode === undefined ? undefined : RELINK_FAILURES[run.exitCode]
   const reason = known === undefined ? run.reason : `${known}${run.tail === '' ? '' : `: ${run.tail}`}`
-  // Exit codes 90 to 93 stop the command before it changes anything.
+  // Exit codes 89 to 93 stop the command before it changes anything.
   switch (run.exitCode) {
+    case 89:
+      return { kind: 'collision' }
     case 90:
     case 93:
       return { kind: 'failed', code: 'PATCH_IO', reason }
@@ -548,6 +658,7 @@ function relinkReason(outcome: Exclude<Relink, { kind: 'done' }>): string {
   switch (outcome.kind) {
     case 'changed': return outcome.gone ? 'it no longer exists' : 'it changed in the meantime'
     case 'occupied': return 'the name is taken'
+    case 'collision': return 'the staging directory name is taken'
     case 'split': return 'it changed while being relinked'
     case 'failed':
     case 'unknown': return outcome.reason
@@ -559,6 +670,7 @@ function relinkFailure(outcome: Exclude<Relink, { kind: 'done' }>, path: string,
   switch (outcome.kind) {
     case 'changed': return new PatchError('PATCH_STALE', `"${path}" ${outcome.gone ? 'disappeared' : 'changed, so it was not touched,'} while the patch was being applied. Read it again and retry.`)
     case 'occupied': return new PatchError('PATCH_CONFLICT', `${action} failed: the new name was created by someone else in the meantime.`)
+    case 'collision': return new PatchError('PATCH_IO', `${action} failed: every staging directory name tried exists already.`)
     case 'split': return new PatchError('PATCH_STALE', `"${path}" changed while the patch was being applied.`)
     case 'failed': return new PatchError(outcome.code, `${action} failed: ${outcome.reason}`)
     case 'unknown': return new PatchError('PATCH_IO', `${action} failed: ${outcome.reason}`)
@@ -576,6 +688,47 @@ async function holding(fs: FileSystem, target: FsTarget, text: string): Promise<
     const first = await fs.stat(target)
     if (first === undefined || await readWhole(fs, target, undefined) !== text) return undefined
     return (await fs.stat(target))?.version === first.version ? first.version : undefined
+  } catch {
+    // A file that cannot be checked is not taken as this patch's.
+    return undefined
+  }
+}
+
+/** Window size for reading a file's bytes into its digest. */
+const DIGEST_WINDOW = 1 << 20
+
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/**
+ * The version of `target` and the SHA-256 of its bytes, read in windows, when
+ * a stat before and after the read agree.
+ * @returns undefined for a missing file or when the version changed during the read.
+ * @throws the filesystem's error when the file cannot be read.
+ */
+async function fingerprint(fs: FileSystem, target: FsTarget, signal: AbortSignal | undefined): Promise<Held | undefined> {
+  const first = await fs.stat(target, signal)
+  if (first === undefined) return undefined
+  const hash = createHash('sha256')
+  for (let offset = 0; ;) {
+    const window = await fs.readByteRange(target, { offset, length: DIGEST_WINDOW }, signal)
+    if (window.length === 0) break
+    hash.update(window)
+    offset += window.length
+  }
+  return (await fs.stat(target, signal))?.version === first.version ? { version: first.version, digest: hash.digest('hex') } : undefined
+}
+
+/**
+ * The version of `target` when it holds bytes with SHA-256 `digest` at version
+ * `expected` (see {@link fingerprint}).
+ * @returns the version, or undefined when the file differs or cannot be checked.
+ */
+async function holdingBytes(fs: FileSystem, target: FsTarget, digest: string, expected: FsVersion): Promise<FsVersion | undefined> {
+  try {
+    const print = await fingerprint(fs, target, undefined)
+    return print?.version === expected && print.digest === digest ? expected : undefined
   } catch {
     // A file that cannot be checked is not taken as this patch's.
     return undefined

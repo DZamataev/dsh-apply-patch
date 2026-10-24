@@ -30,11 +30,16 @@
  *   directories are created first). With changes, the new text is then written
  *   to the destination, guarded by the version the move left.
  * - Delete File: the file is relinked into a private staging directory next to
- *   it (`.dsh-apply-patch-trash-<random>`, mode 700). The staging directories
- *   are removed only after the whole patch succeeded; an undo relinks the file
- *   back, so any file, binary included, is restored byte for byte with its mode.
- * - Undoing an added file relinks it into staging too, and staging is removed
- *   after the undo; undoing a move relinks the destination back to the source.
+ *   it (`.dsh-apply-patch-trash-<random>`, mode 700, made by this patch's own
+ *   `mkdir`; a name that exists already is never used). The staged file must
+ *   hold the bytes checked while preparing (SHA-256), or it is put back (or
+ *   kept and named) and the patch fails. Staged files are removed only after
+ *   the whole patch succeeded, each after checking its bytes again, and then
+ *   their empty directory; an undo relinks the file back, so any file, binary
+ *   included, is restored byte for byte with its mode.
+ * - Undoing an added file relinks it into staging too, verified against the
+ *   text written, and removed after the undo; undoing a move relinks the
+ *   destination back to the source and checks its text.
  *
  * Each relink stats the old name just before the command and runs only if it is
  * still the expected version, then stats both names to learn the outcome,
@@ -83,12 +88,12 @@ interface MoveStep {
     before: string;
     after: string | null;
 }
-/** A deletion of the file at `version`: it is relinked to `staged`. */
+/** A deletion of the file at `version` whose bytes have SHA-256 `digest`: it is relinked into staging. */
 interface DeleteStep {
     kind: 'delete';
     place: Place;
     version: FsVersion;
-    staged: Slot;
+    digest: string;
 }
 type Step = WriteStep | MoveStep | DeleteStep;
 /** A checked patch, ready to commit. */
@@ -98,31 +103,48 @@ export interface PreparedPatch {
     sandboxPolicy: SandboxExecutionPolicy | undefined;
     staging: Staging;
 }
-/** A staged file: a name inside a staging directory. */
+/** A file this patch put into a staging slot: the version it had then and the SHA-256 of its bytes. */
+interface Held {
+    version: FsVersion;
+    digest: string;
+}
+/** A name inside a staging directory; `held` while it holds a verified file of this patch. */
 interface Slot {
     place: Place;
     dir: StagingDir;
+    held?: Held;
 }
+/**
+ * A staging directory. `state`: `new` before the first relink into it, `made`
+ * when that relink's own `mkdir` created it, `foreign` when it was not created
+ * by it (the name existed, or `mkdir` failed), `unknown` when the outcome is
+ * unknown. Only a `made` directory is removed, and only when it is empty.
+ */
 interface StagingDir {
     path: string;
     target: FsTarget;
-    made: boolean;
-    slots: number;
+    state: 'new' | 'made' | 'foreign' | 'unknown';
+    slots: Slot[];
 }
-/**
- * Staging directories, one per parent directory of a staged file, created by
- * the first relink into them.
- */
+/** Staging directories, one in use per parent directory of a staged file. */
 declare class Staging {
     private readonly fs;
     private readonly policy;
-    readonly dirs: Map<string, StagingDir>;
+    readonly dirs: StagingDir[];
+    private readonly current;
     constructor(fs: FileSystem, policy: SandboxExecutionPolicy | undefined);
     /**
-     * A fresh name in the staging directory next to `target`.
-     * @throws {@link PatchError} when the name is outside what the sandbox allows.
+     * Check that a file next to `target` may be staged.
+     * @throws {@link PatchError} when staging there is outside what the sandbox allows.
+     */
+    check(target: FsTarget, signal?: AbortSignal): Promise<void>;
+    /**
+     * A fresh name in the staging directory next to `target`, in a new directory
+     * when the current one is not usable (`foreign` or `unknown`).
+     * @throws {@link PatchError} when the name cannot be resolved or is outside what the sandbox allows.
      */
     slot(target: FsTarget, signal?: AbortSignal): Promise<Slot>;
+    private dir;
 }
 /**
  * Resolve and check every operation and compute the new file texts.

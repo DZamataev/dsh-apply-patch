@@ -48,7 +48,8 @@ describe('removals are guarded like writes', () => {
     const h = await open()
     writeFileSync(join(h.dir, 'victim'), 'old\n')
     await h.observe('victim')
-    h.onFs('readText', 1, () => writeFileSync(join(h.dir, 'victim'), 'external\n'))
+    // stat #1 checks the file while preparing, #2 and #3 surround the read of its bytes.
+    h.onFs('stat', 3, () => writeFileSync(join(h.dir, 'victim'), 'external\n'))
     await expect(h.run(patch('*** Delete File: victim'))).rejects.toMatchObject({
       code: 'PATCH_STALE',
       message: expect.stringContaining('No file had been changed.'),
@@ -100,8 +101,8 @@ describe('removals are guarded like writes', () => {
     writeFileSync(join(h.dir, 'f'), 'f\n')
     await h.observe('f')
     h.mapShell(result => ({ ...result, aborted: true }))
-    // stat #1 is the check while preparing, #2 the check before staging, #3 finds the staging directory, #4 checks the file after the shell.
-    h.onFs('stat', 4, () => { throw new Error('stat failed') }, 'before')
+    // stats #1 to #3 check the file while preparing, #4 checks it before staging, #5 after the shell.
+    h.onFs('stat', 5, () => { throw new Error('stat failed') }, 'before')
     const error = await h.run(patch('*** Delete File: f')).catch((e: Error) => e)
     expect(String(error)).toContain('The state of "f" is unknown')
     expect(String(error)).not.toContain('No file had been changed')
