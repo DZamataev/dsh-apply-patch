@@ -111,7 +111,7 @@ function applyCodex(path: string, before: string, chunks: readonly Chunk[]): str
       throw new PlacementError(`The lines of ${label} match ${found.indices.length} places only after ignoring whitespace or punctuation (lines ${found.indices.slice(0, 5).map(i => i + 1).join(', ')}). Copy the lines exactly as they are in the file, or add more context lines.`, false)
     }
     if (found.kind === 'none') throw mismatch(label, texts, chunk, cursor, k, '')
-    replacements.push(...splitAtContext(found.index, variant.old, variant.neu, chunk.context, fresh))
+    for (const r of splitAtContext(found.index, variant.old, variant.neu, chunk.context, fresh)) replacements.push(r)
     cursor = found.index + variant.old.length
   })
   return rebuild(lines, replacements).map(line => line.text + (line.eol === '' ? eol : line.eol)).join('')
@@ -153,13 +153,14 @@ function splitAtContext(index: number, old: readonly string[], neu: readonly str
 interface ImageLine extends Line { patched: boolean }
 
 function applyUnified(path: string, before: string, chunks: readonly Chunk[]): string {
-  const image: ImageLine[] = split(before, /\n/g).map(line => ({ ...line, patched: false }))
+  let image: ImageLine[] = split(before, /\n/g).map(line => ({ ...line, patched: false }))
   let cursor = 0
   chunks.forEach((chunk, k) => {
     const old = side(chunk.oldLines, chunk.oldUnterminated)
     const neu = side(chunk.newLines, chunk.newUnterminated)
     const at = chunk.oldStart === undefined ? placeUnnumbered(path, image, chunk, old, cursor, k) : place(path, image, chunk, old, k)
-    image.splice(at, old.length, ...neu.map(line => ({ ...line, patched: true })))
+    // concat, not splice(...items): argument spreads overflow the stack for very large hunks.
+    image = image.slice(0, at).concat(neu.map(line => ({ ...line, patched: true })), image.slice(at + old.length))
     cursor = at + neu.length
   })
   return image.map(line => line.text + line.eol).join('')
@@ -307,13 +308,15 @@ function split(text: string, terminator: RegExp): Line[] {
 
 /** Apply non-overlapping replacements; a stable sort keeps appends at the end in chunk order. */
 function rebuild(lines: readonly Line[], replacements: readonly Replacement[]): Line[] {
+  // Loops, not push(...lines): argument spreads overflow the stack for files with very many lines.
   const out: Line[] = []
   let at = 0
   for (const r of [...replacements].sort((a, b) => a.index - b.index)) {
-    out.push(...lines.slice(at, r.index), ...r.newLines)
+    for (; at < r.index; at++) out.push(lines[at])
+    for (const line of r.newLines) out.push(line)
     at = r.index + r.oldLength
   }
-  out.push(...lines.slice(at))
+  for (; at < lines.length; at++) out.push(lines[at])
   return out
 }
 

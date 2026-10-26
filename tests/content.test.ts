@@ -14,6 +14,14 @@ const unified = (before: string, ...body: string[]) => {
 }
 
 describe('applyChunks', () => {
+  it('patches a file with a million lines in both formats', () => {
+    const rest = 'x\n'.repeat(1_000_000)
+    expect(codex(`old\n${rest}`, '@@', '-old', '+new')).toBe(`new\n${rest}`)
+    expect(unified(`old\n${rest}`, '@@ -1,2 +1,2 @@', '-old', '+new', ' x')).toBe(`new\n${rest}`)
+    const added = parseUnifiedDiff(`--- a/f\n+++ b/f\n@@ -0,0 +1,1000000 @@\n${'+y\n'.repeat(1_000_000)}`).ops[0]
+    expect(applyChunks('f', '', added.kind === 'update' ? added.chunks : [], 'unified')).toBe('y\n'.repeat(1_000_000))
+  })
+
   it('replaces lines found after the "@@" labels', () => {
     const before = 'def a():\n    pass\ndef b():\n    pass\n'
     expect(codex(before, '@@ def b():', '-    pass', '+    return 2')).toBe('def a():\n    pass\ndef b():\n    return 2\n')

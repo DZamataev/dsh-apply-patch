@@ -112,6 +112,20 @@ describe('apply_patch on real DSH services', () => {
     expect(existsSync(join(h.dir, 'f'))).toBe(false)
   })
 
+  it('patches files with hundreds of thousands of lines in both formats', async () => {
+    const h = await open()
+    const rest = 'x\n'.repeat(250_000)
+    writeFileSync(join(h.dir, 'f'), `old\n${rest}`)
+    await h.observe('f')
+    await h.run(patch('*** Update File: f', '@@', '-old', '+new'))
+    expect(readFileSync(join(h.dir, 'f'), 'utf8')).toBe(`new\n${rest}`)
+    const added = 'y\n'.repeat(170_000)
+    const diff = `diff --git a/g b/g\nnew file mode 100644\n--- /dev/null\n+++ b/g\n@@ -0,0 +1,170000 @@\n${'+y\n'.repeat(170_000)}`
+    expect(Buffer.byteLength(diff)).toBeLessThan(524_288)
+    await h.run(diff)
+    expect(readFileSync(join(h.dir, 'g'), 'utf8')).toBe(added)
+  })
+
   it('moves a file without changes byte for byte and keeps its permission bits', async () => {
     const h = await open()
     writeFileSync(join(h.dir, 'mixed'), 'one\r\ntwo\nthree', { mode: 0o700 })
