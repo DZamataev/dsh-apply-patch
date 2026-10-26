@@ -24,7 +24,7 @@
 
 import { PatchError, quote } from '../errors.js'
 import type { Chunk } from '../parse/types.js'
-import { seek } from './seek.js'
+import { AMBIGUOUS_SHOWN, seek } from './seek.js'
 import type { SeekResult } from './seek.js'
 
 /**
@@ -108,7 +108,7 @@ function applyCodex(path: string, before: string, chunks: readonly Chunk[]): str
       if (found.kind !== 'none') { variant = candidate; break }
     }
     if (found.kind === 'ambiguous') {
-      throw new PlacementError(`The lines of ${label} match ${found.indices.length} places only after ignoring whitespace or punctuation (lines ${found.indices.slice(0, 5).map(i => i + 1).join(', ')}). Copy the lines exactly as they are in the file, or add more context lines.`, false)
+      throw new PlacementError(`The lines of ${label} match ${found.indices.length < AMBIGUOUS_SHOWN ? found.indices.length : `${AMBIGUOUS_SHOWN} or more`} places only after ignoring whitespace or punctuation (lines ${found.indices.map(i => i + 1).join(', ')}). Copy the lines exactly as they are in the file, or add more context lines.`, false)
     }
     if (found.kind === 'none') throw mismatch(label, texts, chunk, cursor, k, '')
     for (const r of splitAtContext(found.index, variant.old, variant.neu, chunk.context, fresh)) replacements.push(r)
@@ -149,21 +149,44 @@ function splitAtContext(index: number, old: readonly string[], neu: readonly str
   return out
 }
 
-/** A line of the file image of a unified diff; `patched` lines come from an applied hunk and are not matched again. */
-interface ImageLine extends Line { patched: boolean }
+/**
+ * A line of the file image of a unified diff; `patched` lines come from an
+ * applied hunk and are not matched again. `hash` caches {@link gitHash} of the
+ * line with its terminator.
+ */
+interface ImageLine extends Line { patched: boolean; hash?: number }
 
+/**
+ * Apply the hunks to one mutable line array. Each hunk replaces its lines in
+ * place, and image lines are hashed only when a placement compares them, so a
+ * hunk costs its own size plus the places tried, not the size of the file.
+ */
 function applyUnified(path: string, before: string, chunks: readonly Chunk[]): string {
-  let image: ImageLine[] = split(before, /\n/g).map(line => ({ ...line, patched: false }))
+  const image: ImageLine[] = split(before, /\n/g).map(line => ({ ...line, patched: false }))
   let cursor = 0
   chunks.forEach((chunk, k) => {
     const old = side(chunk.oldLines, chunk.oldUnterminated)
     const neu = side(chunk.newLines, chunk.newUnterminated)
     const at = chunk.oldStart === undefined ? placeUnnumbered(path, image, chunk, old, cursor, k) : place(path, image, chunk, old, k)
-    // concat, not splice(...items): argument spreads overflow the stack for very large hunks.
-    image = image.slice(0, at).concat(neu.map(line => ({ ...line, patched: true })), image.slice(at + old.length))
+    replace(image, at, old.length, neu.map(line => ({ ...line, patched: true })))
     cursor = at + neu.length
   })
   return image.map(line => line.text + line.eol).join('')
+}
+
+/** Largest number of items passed to `splice` as arguments; argument spreads overflow the stack for very large hunks. */
+const SPLICE_ITEMS = 4096
+
+/** Replace `count` lines of `image` at `at` by `items`. */
+function replace(image: ImageLine[], at: number, count: number, items: readonly ImageLine[]): void {
+  if (items.length <= SPLICE_ITEMS) {
+    image.splice(at, count, ...items)
+    return
+  }
+  const tail = image.slice(at + count)
+  image.length = at
+  for (const line of items) image.push(line)
+  for (const line of tail) image.push(line)
 }
 
 /** Lines of one side of a hunk; a line followed by `\ No newline at end of file` has no LF. */
@@ -188,25 +211,37 @@ function gitHash(text: string): number {
   return hash
 }
 
+function imageHash(line: ImageLine): number {
+  return line.hash ??= gitHash(key(line))
+}
+
 /**
- * The image as plain `git apply` matches against it (`match_fragment`): each
- * old line must hash like the unpatched image line at its index, and the old
- * lines' bytes, joined, must be a prefix of the image bytes from the first one
- * on (with `atEnd`, reach exactly to the end). A line followed by `\ No
+ * The old lines of a hunk as plain `git apply` matches them (`match_fragment`):
+ * each old line must hash like the unpatched image line at its index, and the
+ * old lines' bytes, joined, must be a prefix of the image bytes from the first
+ * one on (with `atEnd`, reach exactly to the end). A line followed by `\ No
  * newline at end of file` has no LF, so git also matches it against a line
  * that has one and joins the next line onto the new text; without such lines
  * this is exactly {@link fits}.
  */
-function gitImage(image: readonly ImageLine[]): (old: readonly Line[], at: number, atEnd: boolean) => boolean {
-  const text = image.map(key).join('')
-  const offsets = [0]
-  for (const line of image) offsets.push(offsets.at(-1)! + key(line).length)
-  const hashes = image.map(line => gitHash(key(line)))
-  return (old, at, atEnd) => {
+function gitMatcher(old: readonly Line[]): (image: readonly ImageLine[], at: number, atEnd: boolean) => boolean {
+  const hashes = old.map(line => gitHash(key(line)))
+  const bytes = old.map(key).join('')
+  return (image, at, atEnd) => {
     if (at + old.length > image.length) return false
-    if (!old.every((line, j) => !image[at + j].patched && hashes[at + j] === gitHash(key(line)))) return false
-    const bytes = old.map(key).join('')
-    return text.startsWith(bytes, offsets[at]) && (!atEnd || offsets[at] + bytes.length === text.length)
+    for (let j = 0; j < old.length; j += 1) if (image[at + j].patched || imageHash(image[at + j]) !== hashes[j]) return false
+    let pos = 0
+    let i = at
+    for (; pos < bytes.length; i += 1) {
+      if (i === image.length) return false
+      const { text, eol } = image[i]
+      if (text.length + eol.length > bytes.length - pos) return !atEnd && key(image[i]).startsWith(bytes.slice(pos))
+      if (!bytes.startsWith(text, pos) || !bytes.startsWith(eol, pos + text.length)) return false
+      pos += text.length + eol.length
+    }
+    if (!atEnd) return true
+    for (; i < image.length; i += 1) if (image[i].text.length + image[i].eol.length > 0) return false
+    return true
   }
 }
 
@@ -217,7 +252,7 @@ function gitImage(image: readonly ImageLine[]): (old: readonly Line[], at: numbe
  * at its end; there is no fallback when that fails. The search starts at the
  * header's new start and alternates forward and backward, so of two equally
  * distant places the later one wins; places are compared as git compares them
- * ({@link gitImage}). A hunk is applied only where its lines also match exactly:
+ * ({@link gitMatcher}). A hunk is applied only where its lines also match exactly:
  * where git would match a line marked `\ No newline at end of file` against a
  * line with a newline (and join lines), the hunk is refused. A hunk without any
  * context (`git diff -U0`) is accepted only where its header points, since git
@@ -231,8 +266,8 @@ function place(path: string, image: readonly ImageLine[], chunk: Chunk, old: rea
   const trailing = trailingContext(chunk)
   const atStart = (chunk.oldStart ?? 0) <= 1
   const atEnd = trailing === 0
-  const matches = gitImage(image)
-  const ok = (at: number) => (!atStart || at === 0) && (!atEnd || at + old.length === image.length) && matches(old, at, atEnd)
+  const matches = gitMatcher(old)
+  const ok = (at: number) => (!atStart || at === 0) && (!atEnd || at + old.length === image.length) && matches(image, at, atEnd)
   const n = image.length
   let line = atStart ? 0 : atEnd ? n - old.length : Math.max(0, (chunk.newStart ?? 1) - 1)
   if (line < 0 || line > n) line = n

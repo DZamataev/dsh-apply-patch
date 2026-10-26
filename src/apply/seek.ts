@@ -6,9 +6,10 @@
  * it includes U+0085 and excludes U+FEFF, unlike `String.prototype.trim`).
  *
  * An exact match takes the first candidate at or after the cursor, as
- * codex-rs does. The tolerant levels accept only a single candidate: where
- * codex-rs edits the first of several tolerant matches, two or more are
- * reported as ambiguous instead.
+ * codex-rs does, and the search stops there. The tolerant levels accept only
+ * a single candidate: where codex-rs edits the first of several tolerant
+ * matches, two or more are reported as ambiguous instead, with at most
+ * {@link AMBIGUOUS_SHOWN} of them.
  * @module dsh-apply-patch/apply/seek
  */
 
@@ -28,6 +29,9 @@ const PUNCTUATION: Record<string, string> = {
   '\u2008': ' ', '\u2009': ' ', '\u200A': ' ', '\u202F': ' ', '\u205F': ' ', '\u3000': ' ',
 }
 
+/** Tolerant candidates collected before a match is reported as ambiguous; the scan stops at this many. */
+export const AMBIGUOUS_SHOWN = 5
+
 const LEVELS: ((line: string) => string)[] = [
   line => line,
   rustTrimEnd,
@@ -41,7 +45,7 @@ const LEVELS: ((line: string) => string)[] = [
  * @param pattern - lines to find; an empty pattern matches at `from`, also with `endOfFile`, as in codex-rs.
  * @param from - first index a match may start at.
  * @param options - `endOfFile` pins the match to the end.
- * @returns the match, no match, or the ambiguous tolerant candidates.
+ * @returns the match, no match, or the first {@link AMBIGUOUS_SHOWN} (at least two) ambiguous tolerant candidates.
  */
 export function seek(
   lines: readonly string[],
@@ -56,14 +60,19 @@ export function seek(
   for (let level = 0; level < LEVELS.length; level += 1) {
     const norm = LEVELS[level]
     const wanted = pattern.map(norm)
+    // Each file line is normalized once per level, not once per candidate it is compared in.
+    const normalized = level === 0 ? lines : lines.slice(first, last + pattern.length).map(norm)
+    const offset = level === 0 ? 0 : first
     const hits: number[] = []
-    for (let i = first; i <= last; i += 1) {
+    for (let i = first; i <= last && hits.length < AMBIGUOUS_SHOWN; i += 1) {
       let ok = true
-      for (let j = 0; j < wanted.length && ok; j += 1) ok = norm(lines[i + j]) === wanted[j]
-      if (ok) hits.push(i)
+      for (let j = 0; j < wanted.length && ok; j += 1) ok = normalized[i - offset + j] === wanted[j]
+      if (!ok) continue
+      if (level === 0) return { kind: 'found', index: i }
+      hits.push(i)
     }
     if (hits.length === 0) continue
-    if (level > 0 && hits.length > 1) return { kind: 'ambiguous', indices: hits }
+    if (hits.length > 1) return { kind: 'ambiguous', indices: hits }
     return { kind: 'found', index: hits[0] }
   }
   return { kind: 'none' }
