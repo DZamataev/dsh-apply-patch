@@ -39,7 +39,10 @@
  * (`rename from`/`rename to`, or differing `---`/`+++` names), as with git;
  * `---`/`+++ /dev/null` there needs the `new file mode`/`deleted file mode`
  * line. Two differing names of a bare `---`/`+++` pair (`foo.c.orig` and
- * `foo.c`) patch the `+++` file.
+ * `foo.c`) patch the `+++` file. A bare pair creates (`--- /dev/null`) or
+ * deletes (`+++ /dev/null`) a file only with hunks; without hunks it is text
+ * git skips, so an empty file is created or deleted only by a `diff --git`
+ * section with `new file mode` or `deleted file mode`.
  * @module dsh-apply-patch/parse/unified
  */
 import type { ParsedPatch } from './types.js';

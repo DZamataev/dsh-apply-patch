@@ -66,9 +66,9 @@ const cases: Case[] = [
   { name: 'rejects a "---" line after a complete hunk', patch: `${head}${hunk}--- a/g\n`, git: updated, ours: 'error' },
 ]
 
-/** Apply `patch` to `f` = `before` in memory. */
-function ours(patch: string): Outcome {
-  const files: Record<string, string> = { f: before }
+/** Apply `patch` to `start` (`f` = `before`) in memory. */
+function ours(patch: string, start: Record<string, string> = { f: before }): Outcome {
+  const files: Record<string, string> = { ...start }
   try {
     for (const op of parseUnifiedDiff(patch).ops) {
       if (op.kind === 'add') {
@@ -94,12 +94,12 @@ function ours(patch: string): Outcome {
   return files
 }
 
-/** Apply `patch` with `git apply` in a fresh repository. */
-function real(patch: string): Outcome {
+/** Apply `patch` with `git apply` in a fresh repository holding `start` (`f` = `before`). */
+function real(patch: string, start: Record<string, string> = { f: before }): Outcome {
   const dir = mkdtempSync(join(tmpdir(), 'ap-git-headers-'))
   try {
     spawnSync('git', ['init', '-q'], { cwd: dir })
-    writeFileSync(join(dir, 'f'), before)
+    for (const [name, text] of Object.entries(start)) writeFileSync(join(dir, name), text)
     writeFileSync(join(dir, '.patch'), patch)
     if (spawnSync('git', ['apply', '.patch'], { cwd: dir }).status !== 0) return 'error'
     const files: Record<string, string> = {}
@@ -127,6 +127,47 @@ describe('git header lines', () => {
 
   it.runIf(hasGit).each(cases)('git apply agrees: $name', ({ patch, git: expected }) => {
     expect(real(patch)).toEqual(expected)
+  })
+})
+
+/**
+ * A bare `---`/`+++` pair without hunks is text git skips, also with
+ * `/dev/null` on one side; only a `diff --git` header with `new file mode` or
+ * `deleted file mode` creates or deletes a file without hunks.
+ */
+describe('bare "---"/"+++" pairs without hunks', () => {
+  const updateG = 'diff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-a\n+A\n'
+  const addPair = '--- /dev/null\n+++ b/f\n'
+  const deletePair = '--- a/f\n+++ /dev/null\n'
+  const cases: { name: string; start: Record<string, string>; patch: string; git: Outcome }[] = [
+    { name: 'keeps an empty file after a deletion pair that follows a hunk', start: { g: 'a\n', f: '' }, patch: updateG + deletePair, git: { g: 'A\n', f: '' } },
+    { name: 'keeps an empty file after a deletion pair before a section', start: { g: 'a\n', f: '' }, patch: deletePair + updateG, git: { g: 'A\n', f: '' } },
+    { name: 'keeps a file holding only a byte order mark after a deletion pair', start: { g: 'a\n', f: '\uFEFF' }, patch: updateG + deletePair, git: { g: 'A\n', f: '\uFEFF' } },
+    { name: 'creates no file for an addition pair that follows a hunk', start: { g: 'a\n' }, patch: updateG + addPair, git: { g: 'A\n' } },
+    { name: 'creates no file for an addition pair before a section', start: { g: 'a\n' }, patch: addPair + updateG, git: { g: 'A\n' } },
+    { name: 'creates no file for an addition pair between sections', start: { g: 'a\n', h: 'b\n' }, patch: `${updateG}${addPair}diff --git a/h b/h\n--- a/h\n+++ b/h\n@@ -1 +1 @@\n-b\n+B\n`, git: { g: 'A\n', h: 'B\n' } },
+    { name: 'rejects a lone deletion pair', start: { f: '' }, patch: deletePair, git: 'error' },
+    { name: 'rejects a lone addition pair', start: {}, patch: addPair, git: 'error' },
+    { name: 'rejects a lone update pair', start: { f: '' }, patch: '--- a/f\n+++ b/f\n', git: 'error' },
+    { name: 'deletes with a deletion pair and hunks', start: { g: 'a\n', f: 'x\n' }, patch: `${updateG}${deletePair}@@ -1 +0,0 @@\n-x\n`, git: { g: 'A\n' } },
+    { name: 'creates with an addition pair and hunks', start: { g: 'a\n' }, patch: `${updateG}${addPair}@@ -0,0 +1 @@\n+x\n`, git: { g: 'A\n', f: 'x\n' } },
+    { name: 'creates an empty file with "new file mode" and no hunks', start: { g: 'a\n' }, patch: `${updateG}diff --git a/f b/f\nnew file mode 100644\n`, git: { g: 'A\n', f: '' } },
+    { name: 'deletes an empty file with "deleted file mode" and no hunks', start: { g: 'a\n', f: '' }, patch: `${updateG}diff --git a/f b/f\ndeleted file mode 100644\n`, git: { g: 'A\n' } },
+    { name: 'creates an empty file with "new file mode" and "---"/"+++" names', start: {}, patch: 'diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n', git: { f: '' } },
+  ]
+
+  it.each(cases)('$name', ({ start, patch, git: expected }) => {
+    expect(ours(patch, start)).toEqual(expected)
+  })
+
+  it('reports a patch of only hunkless pairs as PATCH_PARSE', () => {
+    for (const patch of [deletePair, addPair, addPair + deletePair]) {
+      expect(() => parseUnifiedDiff(patch)).toThrow(expect.objectContaining({ code: 'PATCH_PARSE', message: expect.stringMatching(/no file changes/) }))
+    }
+  })
+
+  it.runIf(hasGit).each(cases)('git apply agrees: $name', ({ start, patch, git: expected }) => {
+    expect(real(patch, start)).toEqual(expected)
   })
 })
 
