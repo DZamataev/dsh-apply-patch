@@ -167,6 +167,29 @@ const modeCases: ModeCase[] = [
   { name: 'accepts a regular new file', patch: newG('100644'), git: { f: '644:a\nb\n', g: '644:x\n' }, ours: { f: before, g: 'x\n' } },
   { name: 'accepts a new file mode that git reads as 100644', patch: newG('100664'), git: { f: '644:a\nb\n', g: '644:x\n' }, ours: { f: before, g: 'x\n' } },
   { name: 'accepts deleting a file with another mode', patch: `${git}deleted file mode 100755\n--- a/f\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n`, git: {}, ours: {} },
+  { name: 'accepts a "+" sign on a mode as git does', patch: `${git}old mode +100644\nnew mode 100644\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: updated },
+  { name: 'refuses a mode change written with a "+" sign', patch: `${git}old mode 100644\nnew mode +100755\n${head}${hunk}`, git: { f: '755:A\nb\n' }, ours: 'unsupported' },
+  { name: 'accepts a "+" sign on a new file mode', patch: newG('+100644'), git: { f: '644:a\nb\n', g: '644:x\n' }, ours: { f: before, g: 'x\n' } },
+  { name: 'refuses a negative new mode', patch: `${git}old mode 100644\nnew mode -100644\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a negative old mode', patch: `${git}old mode -100644\nnew mode 100644\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a negative executable old mode', patch: `${git}old mode -100755\nnew mode 100755\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses equal negative modes', patch: `${git}old mode -100644\nnew mode -100644\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a negative mode that git wraps to 100644', patch: `${git}old mode -37777677134\nnew mode 100644\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: 'unsupported' },
+  { name: 'refuses a negative new file mode', patch: newG('-100644'), git: { f: '644:a\nb\n', g: 'dir:' }, ours: 'unsupported' },
+  { name: 'refuses a negative deleted file mode', patch: `${git}deleted file mode -100644\n--- a/f\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a negative mode on an "index" line', patch: `${git}index 1234567..abcdef0 -100644\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'rejects two signs on a mode', patch: `${git}old mode +-100644\nnew mode 100644\n${head}${hunk}`, git: 'error', ours: 'error' },
+  { name: 'accepts leading zeros on a mode', patch: `${git}old mode 0000100644\nnew mode 100644\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: updated },
+  { name: 'accepts an overlong mode whose low 32 bits are 100644', patch: `${git}old mode 1000000100644\nnew mode 100644\n${head}${hunk}`, git: { f: '644:A\nb\n' }, ours: updated },
+  { name: 'refuses a 64-bit mode that git reads as a submodule entry', patch: `${git}old mode 1777777777777777677134\nnew mode 100644\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a mode beyond 64 bits', patch: `${git}old mode 777777777777777777777777100644\nnew mode 100644\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses equal symbolic link modes for a regular file', patch: `${git}old mode 120000\nnew mode 120000\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a lone submodule "old mode"', patch: `${git}old mode 160000\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a symbolic link mode on an "index" line', patch: `${git}index 1234567..abcdef0 120000\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses deleting a regular file as a symbolic link', patch: `${git}deleted file mode 120000\n--- a/f\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a lone directory "old mode"', patch: `${git}old mode 40000\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a directory mode on an "index" line', patch: `${git}index 123..456 040000\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
+  { name: 'refuses a submodule mode on an "index" line', patch: `${git}index 123..456 160000\n${head}${hunk}`, git: 'error', ours: 'unsupported' },
   { name: 'skips mode lines after a hunk', patch: `${git}${head}${hunk}old mode 100644\nnew mode 100755\n`, git: { f: '644:A\nb\n' }, ours: updated },
 ]
 
@@ -195,10 +218,62 @@ function realModes(patch: string): ModeOutcome {
 describe('git mode lines', () => {
   it.each(modeCases)('$name', ({ patch, ours: expected }) => {
     if (expected !== 'unsupported') return expect(ours(patch)).toEqual(expected)
-    expect(() => parseUnifiedDiff(patch)).toThrow(expect.objectContaining({ code: 'PATCH_UNSUPPORTED', message: expect.stringMatching(/mode .*not supported|not supported.*mode/) }))
+    expect(() => parseUnifiedDiff(patch)).toThrow(expect.objectContaining({ code: 'PATCH_UNSUPPORTED', message: expect.stringMatching(/mode .*not supported|not supported.*mode|mode .*patches only regular files/) }))
   })
 
   it.runIf(hasGit).each(modeCases)('git apply: $name', ({ patch, git: expected }) => {
     expect(realModes(patch)).toEqual(expected)
   })
 })
+
+/**
+ * Hunks of a new file are placed against an empty file, and hunks of a deleted
+ * file against its text, as git places hunks of an update. Every generated
+ * case is compared with `git apply`; the only allowed difference is a refused
+ * context-free hunk that git would put at the end of the file instead of where
+ * its header points.
+ */
+describe('hunks of new and deleted files', () => {
+  const addHunks = [
+    '@@ -0,0 +1 @@\n+x\n', '@@ -0,0 +1,2 @@\n+x\n+y\n', '@@ -0,0 +0,1 @@\n+x\n', '@@ -0,0 +5,2 @@\n+x\n+y\n', '@@ -1,0 +1 @@\n+x\n',
+    '@@ -1,0 +2 @@\n+y\n', '@@ -2,0 +2 @@\n+y\n', '@@ -0,0 +2 @@\n+y\n', '@@ -3,0 +3 @@\n+z\n', '@@ -5,0 +5 @@\n+z\n', '@@ -0,0 +1 @@\n+z\n\\ No newline at end of file\n',
+  ]
+  const added = [
+    ...addHunks.map(h => [h]),
+    ...addHunks.slice(0, 2).flatMap(first => addHunks.map(second => [first, second])),
+    ['@@ -0,0 +1 @@\n+x\n', '@@ -2,0 +2 @@\n+y\n', '@@ -3,0 +3 @@\n+z\n'],
+  ].map(hunks => `diff --git a/g b/g\nnew file mode 100644\n--- /dev/null\n+++ b/g\n${hunks.join('')}`)
+  const deleteHunks = ['@@ -1,2 +0,0 @@\n-a\n-b\n', '@@ -1 +0,0 @@\n-a\n', '@@ -2 +0,0 @@\n-b\n', '@@ -1 +0,0 @@\n-b\n', '@@ -1,2 +5,0 @@\n-a\n-b\n', '@@ -2 +1,0 @@\n-b\n']
+  const deleted = [
+    ...deleteHunks.map(h => [h]),
+    ...deleteHunks.slice(1, 3).flatMap(first => deleteHunks.slice(1).map(second => [first, second])),
+  ].flatMap(hunks => [`diff --git a/f b/f\ndeleted file mode 100644\n--- a/f\n+++ /dev/null\n${hunks.join('')}`, `--- a/f\n+++ /dev/null\n${hunks.join('')}`])
+  const cases = [...added, ...deleted]
+
+  it('places hunks of a new file as git does: the second of two hunks at the start of the file is rejected', () => {
+    expect(ours(added.find(p => p.endsWith('@@ -0,0 +1 @@\n+x\n@@ -0,0 +2 @@\n+y\n'))!)).toBe('error')
+    expect(ours(`diff --git a/g b/g\nnew file mode 100644\n--- /dev/null\n+++ b/g\n@@ -0,0 +1 @@\n+x\n@@ -2,0 +2 @@\n+y\n`)).toEqual({ f: before, g: 'x\ny\n' })
+    expect(ours(`diff --git a/g b/g\nnew file mode 100644\n--- /dev/null\n+++ b/g\n@@ -0,0 +5,2 @@\n+x\n+y\n`)).toEqual({ f: before, g: 'x\ny\n' })
+    expect(ours(`--- a/f\n+++ /dev/null\n@@ -1,2 +5,0 @@\n-a\n-b\n`)).toEqual({})
+  })
+
+  it.runIf(hasGit).each(cases.map((patch, i) => ({ i, patch })))('agrees with git apply: case $i', ({ patch }) => {
+    const expected = real(patch)
+    const actual = ours(patch)
+    if (actual === 'error' && expected !== 'error') expect(diagnose(patch)).toMatch(/no context lines/)
+    else expect(actual).toEqual(expected)
+  })
+})
+
+/** The error message of this tool for `patch`, or `''` when it applies. */
+function diagnose(patch: string): string {
+  try {
+    const files: Record<string, string> = { f: before }
+    for (const op of parseUnifiedDiff(patch).ops) {
+      if (op.kind === 'delete' && op.chunks !== undefined) applyToFile(op.path, files[op.path], op.chunks, 'unified')
+    }
+    return ''
+  } catch (error: unknown) {
+    return error instanceof Error ? error.message : String(error)
+  }
+}

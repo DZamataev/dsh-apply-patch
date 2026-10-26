@@ -14,12 +14,18 @@
  * without header lines is such text too. A `diff --git` section without a hunk
  * right after its header lines must be a new file, a deletion or a rename.
  * Between a bare `+++` header and the first hunk nothing may stand. Modes are
- * compared as git canonicalizes them; a header that would change a file's
- * mode (`new mode` differing from the old mode or without one) or create
+ * read and canonicalized as git reads them; a header that would change a
+ * file's mode (`new mode` differing from the old mode or without one), create
  * anything but a non-executable regular file (`new file mode` other than
- * `100644`) is refused with `PATCH_UNSUPPORTED`, because the tool writes file
- * contents only and git would change the mode. The parser is lenient where
- * models are sloppy, but never so that lines are silently dropped:
+ * `100644`), or patch anything but a regular file (an old mode of `old mode`,
+ * `deleted file mode` or an `index` line that is a symbolic link, directory or
+ * submodule entry) is refused with `PATCH_UNSUPPORTED`, because the tool
+ * writes regular file contents only; so is a negative mode, which git wraps
+ * around to another mode. The old mode is not compared with the file's mode,
+ * which `ctx.fs` does not report. A new file is the result of its hunks placed
+ * against an empty file as git places them, so git's rejections apply. The
+ * parser is lenient where models are sloppy, but never so that lines are
+ * silently dropped:
  *
  * - text before the first header and between files (prose, a ```diff fence, `Index:` lines) is skipped;
  * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
@@ -41,8 +47,10 @@ import type { ParsedPatch } from './types.js';
  * Parse a git or unified diff.
  * @param text - the diff text.
  * @returns the parsed patch.
- * @throws {@link PatchError} `PATCH_PARSE` with the failing line, or
- * `PATCH_UNSUPPORTED` for a header that would change or set a file mode.
+ * @throws {@link PatchError} `PATCH_PARSE` with the failing line,
+ * `PATCH_UNSUPPORTED` for a header that would change or set a file mode or
+ * patch anything but a regular file, `PATCH_CONFLICT` for hunks of a new file
+ * that git would not place.
  */
 export declare function parseUnifiedDiff(text: string): ParsedPatch;
 /**
