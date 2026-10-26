@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.4 (2026-10-26)
+
+- Very large files and hunks apply: replacements are rebuilt with loops and the unified image with `concat` (was: `push(...lines)` and `splice(..., ...lines)` threw an unstructured `RangeError: Maximum call stack size exceeded` for a Codex update of a 250,000-line file or a unified hunk of 170,000 lines, and the file stayed unchanged).
+- Unified: a negative mode (`old mode`, `new mode`, `new file mode`, `deleted file mode`, an `index` line) is refused with `PATCH_UNSUPPORTED` before anything is written (was: the sign was dropped, so `new mode -100644` patched the file where git fails with a type change, and `new file mode -100644` created a regular file where git creates a submodule directory). Modes are otherwise read as git's `strtoul` reads them: a `+` sign and leading zeros are accepted, an overlong value keeps its low 32 bits.
+- Unified: an old mode (`old mode`, `deleted file mode`, an `index` line) that is a symbolic link, directory or submodule entry is refused with `PATCH_UNSUPPORTED` before anything is written; only regular files are patched (was: the type was ignored and the regular file patched, where git fails with "wrong type").
+- Unified: a new file is built by placing its hunks against an empty file as git places hunks of an update (was: all hunks were concatenated, so a second hunk that again started at line 0 was appended where git rejects it). A context-free hunk whose old lines span the whole current text (a new file's first hunk, a deletion of the whole file) applies whatever line its header names, as with git.
+- README: the byte order mark fallback is listed as an extra of both formats; negative modes and non-regular old modes are listed among the git-accepted patches this tool refuses; Known limitations notes that the old mode is not compared with the file's mode, which `ctx.fs` does not report.
+- Tests: large Codex and unified inputs end to end, 23 more mode-line cases and 66 generated new-file and deletion hunk cases, each checked against the installed `git apply`.
+
 ## 1.1.3 (2026-10-24)
 
 - Unified: a `diff --git` header that would change or set a file mode is refused with `PATCH_UNSUPPORTED` before anything is written, also in a dry run, and the whole patch is refused: a `new mode` line that differs from the old mode or comes without one, with or without hunks, next to other files or a rename, and a `new file mode` other than `100644` (executable, symbolic link, submodule entry). Was: a pure mode change failed with `PATCH_PARSE: the diff contains no file changes`, or was silently dropped next to other files; a mode change with hunks applied only the text; an executable or symbolic link new file was created as a regular non-executable file. `git apply` changes the mode in all these cases, and this tool cannot.
