@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.5 (2026-10-26)
+
+- Unified: a bare `---`/`+++` pair without hunks is skipped text, also with `/dev/null` on one side, as git skips it (was: `--- /dev/null`/`+++ b/f` created an empty `f` and `--- a/f`/`+++ /dev/null` deleted an empty `f` where `git apply` leaves the tree as it is; a diff of only such a pair was applied where git fails with "No valid patches in input" and is now `PATCH_PARSE`). A `diff --git` section with `new file mode` or `deleted file mode` still creates or deletes an empty file without hunks.
+- Unified: many hunks in a large file apply in time proportional to the file plus the hunks (was: the whole file was joined, hashed and copied for every hunk; 200 three-line hunks took 2.6 s for a 2 MB file and 5.6 s for a 4 MB file, now 6 and 10 ms). The hunks replace lines in one line array, and a line is hashed only when a placement compares it; the bytes are those of 1.1.4.
+- Codex: an exact match stops at the first place at or after the cursor, and the tolerant levels normalize each file line once and stop at the fifth candidate (was: every candidate of the file was collected; 200 changes with 40 identical context lines in a 3.2 MB file took 21 s, now 14 ms). An ambiguous tolerant match reports "5 or more places" beyond five; the bytes are those of 1.1.4.
+- Tests: 14 bare-pair and empty-file cases, each also checked against the installed `git apply`; six performance bounds for large and repetitive files in both formats; 12 multi-hunk `git diff` outputs applied in order, reversed and shuffled, compared byte for byte with `git apply`.
+
 ## 1.1.4 (2026-10-26)
 
 - Very large files and hunks apply: replacements are rebuilt with loops and the unified image with `concat` (was: `push(...lines)` and `splice(..., ...lines)` threw an unstructured `RangeError: Maximum call stack size exceeded` for a Codex update of a 250,000-line file or a unified hunk of 170,000 lines, and the file stayed unchanged).
