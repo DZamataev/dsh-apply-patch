@@ -22,6 +22,7 @@
  * @module dsh-apply-patch/apply/content
  */
 
+import type { TextEdit } from '../diff.js'
 import { PatchError, quote } from '../errors.js'
 import type { Chunk } from '../parse/types.js'
 import { AMBIGUOUS_SHOWN, LineSearch, seek } from './seek.js'
@@ -43,8 +44,25 @@ export class PlacementError extends PatchError {
 interface Line { text: string; eol: string }
 interface Replacement { index: number; oldLength: number; newLines: Line[] }
 
+/** A new file text and the edits that turned the old text into it, in order and disjoint. */
+export interface Patched { text: string; edits: TextEdit[] }
+
 /**
- * Compute the new text of a file.
+ * Compute the new text of a file and the edits that made it: the replaced lines of every
+ * chunk, and the line ending a Codex patch adds to an untouched last line.
+ * @param path - the path as written in the patch, for messages.
+ * @param before - the current file text.
+ * @param chunks - the chunks in file order.
+ * @param format - the patch format.
+ * @returns the new file text and its edits.
+ * @throws {@link PatchError} `PATCH_CONFLICT` when a chunk cannot be located unambiguously.
+ */
+export function editChunks(path: string, before: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): Patched {
+  return format === 'codex' ? applyCodex(path, before, chunks) : applyUnified(path, before, chunks)
+}
+
+/**
+ * Compute the new text of a file ({@link editChunks} without the edits).
  * @param path - the path as written in the patch, for messages.
  * @param before - the current file text.
  * @param chunks - the chunks in file order.
@@ -53,7 +71,7 @@ interface Replacement { index: number; oldLength: number; newLines: Line[] }
  * @throws {@link PatchError} `PATCH_CONFLICT` when a chunk cannot be located unambiguously.
  */
 export function applyChunks(path: string, before: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): string {
-  return format === 'codex' ? applyCodex(path, before, chunks) : applyUnified(path, before, chunks)
+  return editChunks(path, before, chunks, format).text
 }
 
 const BOM = '\uFEFF'
@@ -73,15 +91,30 @@ const BOM = '\uFEFF'
  * @throws {@link PatchError} `PATCH_CONFLICT` as {@link applyChunks}; after a retry without the mark, the retry's error.
  */
 export function applyToFile(path: string, text: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): string {
+  return editFile(path, text, chunks, format).text
+}
+
+/**
+ * {@link applyToFile} with the edits that made the new text, in offsets of the whole texts.
+ * @param path - the path as written in the patch, for messages.
+ * @param text - the whole file text.
+ * @param chunks - the chunks in file order.
+ * @param format - the patch format.
+ * @returns the new file text and its edits.
+ * @throws {@link PatchError} `PATCH_CONFLICT` as {@link applyToFile}.
+ */
+export function editFile(path: string, text: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): Patched {
   try {
-    return applyChunks(path, text, chunks, format)
+    return editChunks(path, text, chunks, format)
   } catch (error: unknown) {
     if (!text.startsWith(BOM) || !(error instanceof PlacementError) || !error.referenceRejects) throw error
-    return BOM + applyChunks(path, text.slice(1), chunks, format)
+    const patched = editChunks(path, text.slice(1), chunks, format)
+    const shift = (edit: TextEdit): TextEdit => ({ oldFrom: edit.oldFrom + 1, oldTo: edit.oldTo + 1, newFrom: edit.newFrom + 1, newTo: edit.newTo + 1 })
+    return { text: BOM + patched.text, edits: patched.edits.map(shift) }
   }
 }
 
-function applyCodex(path: string, before: string, chunks: readonly Chunk[]): string {
+function applyCodex(path: string, before: string, chunks: readonly Chunk[]): Patched {
   const lines = split(before, /\r\n|\r|\n/g)
   const eol = lines.find(line => line.eol !== '')?.eol ?? '\n'
   const texts = lines.map(line => line.text)
@@ -115,7 +148,37 @@ function applyCodex(path: string, before: string, chunks: readonly Chunk[]): str
     for (const r of splitAtContext(found.index, variant.old, variant.neu, chunk.context, fresh)) replacements.push(r)
     cursor = found.index + variant.old.length
   })
-  return rebuild(lines, replacements).map(line => line.text + (line.eol === '' ? eol : line.eol)).join('')
+  const text = rebuild(lines, replacements).map(line => line.text + (line.eol === '' ? eol : line.eol)).join('')
+  return { text, edits: codexEdits(lines, replacements, eol) }
+}
+
+/**
+ * The edits of {@link rebuild} followed by the join of {@link applyCodex}: one per replacement,
+ * and the line ending `eol` inserted after an untouched last line without one.
+ */
+function codexEdits(lines: readonly Line[], replacements: readonly Replacement[], eol: string): TextEdit[] {
+  const edits: TextEdit[] = []
+  let oldAt = 0
+  let newAt = 0
+  let at = 0
+  const keep = (line: Line) => {
+    const length = line.text.length + line.eol.length
+    if (line.eol === '') edits.push({ oldFrom: oldAt + length, oldTo: oldAt + length, newFrom: newAt + length, newTo: newAt + length + eol.length })
+    oldAt += length
+    newAt += line.eol === '' ? length + eol.length : length
+  }
+  for (const r of [...replacements].sort((a, b) => a.index - b.index)) {
+    for (; at < r.index; at++) keep(lines[at])
+    let oldLength = 0
+    for (; at < r.index + r.oldLength; at++) oldLength += lines[at].text.length + lines[at].eol.length
+    let newLength = 0
+    for (const line of r.newLines) newLength += line.text.length + (line.eol === '' ? eol : line.eol).length
+    edits.push({ oldFrom: oldAt, oldTo: oldAt + oldLength, newFrom: newAt, newTo: newAt + newLength })
+    oldAt += oldLength
+    newAt += newLength
+  }
+  for (; at < lines.length; at++) keep(lines[at])
+  return edits
 }
 
 /** The old/new line pairs a Codex chunk is searched with, in order. */
@@ -152,18 +215,23 @@ function splitAtContext(index: number, old: readonly string[], neu: readonly str
 
 /**
  * A line of the file image of a unified diff; `patched` lines come from an
- * applied hunk and are not matched again. `hash` caches {@link gitHash} of the
- * line with its terminator.
+ * applied hunk and are not matched again, the others keep their offset `from`
+ * in the old text. `hash` caches {@link gitHash} of the line with its terminator.
  */
-interface ImageLine extends Line { patched: boolean; hash?: number }
+interface ImageLine extends Line { patched: boolean; from?: number; hash?: number }
 
 /**
  * Apply the hunks to one mutable line array. Each hunk replaces its lines in
  * place, and image lines are hashed only when a placement compares them, so a
  * hunk costs its own size plus the places tried, not the size of the file.
  */
-function applyUnified(path: string, before: string, chunks: readonly Chunk[]): string {
-  const image: ImageLine[] = split(before, /\n/g).map(line => ({ ...line, patched: false }))
+function applyUnified(path: string, before: string, chunks: readonly Chunk[]): Patched {
+  let offset = 0
+  const image: ImageLine[] = split(before, /\n/g).map(line => {
+    const from = offset
+    offset += line.text.length + line.eol.length
+    return { ...line, patched: false, from }
+  })
   let cursor = 0
   chunks.forEach((chunk, k) => {
     const old = side(chunk.oldLines, chunk.oldUnterminated)
@@ -172,7 +240,28 @@ function applyUnified(path: string, before: string, chunks: readonly Chunk[]): s
     replace(image, at, old.length, neu.map(line => ({ ...line, patched: true })))
     cursor = at + neu.length
   })
-  return image.map(line => line.text + line.eol).join('')
+  return { text: image.map(line => line.text + line.eol).join(''), edits: unifiedEdits(image, before.length) }
+}
+
+/** The edits that turned the old text of length `length` into `image`: each run of patched lines and each gap in the old offsets. */
+function unifiedEdits(image: readonly ImageLine[], length: number): TextEdit[] {
+  const edits: TextEdit[] = []
+  let oldAt = 0
+  let newAt = 0
+  let run = -1
+  for (const line of image) {
+    const size = line.text.length + line.eol.length
+    if (line.from === undefined) {
+      if (run < 0) run = newAt
+    } else {
+      if (run >= 0 || line.from !== oldAt) edits.push({ oldFrom: oldAt, oldTo: line.from, newFrom: run < 0 ? newAt : run, newTo: newAt })
+      run = -1
+      oldAt = line.from + size
+    }
+    newAt += size
+  }
+  if (run >= 0 || oldAt !== length) edits.push({ oldFrom: oldAt, oldTo: length, newFrom: run < 0 ? newAt : run, newTo: newAt })
+  return edits
 }
 
 /** Largest number of items passed to `splice` as arguments; argument spreads overflow the stack for very large hunks. */

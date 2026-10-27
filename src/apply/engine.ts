@@ -64,7 +64,8 @@ import type { ResolvedConfig } from '../config.js'
 import { PatchError } from '../errors.js'
 import type { PatchErrorCode } from '../errors.js'
 import type { ParsedPatch } from '../parse/types.js'
-import { applyToFile } from './content.js'
+import type { TextEdit } from '../diff.js'
+import { applyToFile, editFile } from './content.js'
 
 /** One file in the result. */
 export interface FileChange {
@@ -77,6 +78,8 @@ export interface FileChange {
   from?: string
   before: string | null
   after: string | null
+  /** For a modified file: the edits that turned `before` into `after` (see `editFile`). */
+  edits?: TextEdit[]
 }
 
 /** A file by its resolved target and its path as written in the patch (or the staging path). */
@@ -337,13 +340,13 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
       continue
     }
     const before = await fsCall(() => readWhole(fs, target, signal), op.path)
-    const after = op.chunks.length === 0 ? before : applyToFile(op.path, before, op.chunks, patch.format)
+    const { text: after, edits } = op.chunks.length === 0 ? { text: before, edits: [] } : editFile(op.path, before, op.chunks, patch.format)
     if (op.moveTo === undefined) {
       if (after !== before) {
         await checkWritable(fs, sandboxPolicy, target, op.path, 'update')
         writes.push({ kind: 'write', place, guard, before, after })
       }
-      files.push({ path: op.path, absolutePath: fs.processPath(target), action: 'modified', before, after })
+      files.push({ path: op.path, absolutePath: fs.processPath(target), action: 'modified', before, after, edits })
       continue
     }
     const destination = await resolve(op.moveTo)
@@ -352,7 +355,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     }
     await checkWritable(fs, sandboxPolicy, destination, op.moveTo, 'move a file to')
     moves.push({ kind: 'move', source: place, destination: { target: destination, path: op.moveTo }, version: guard.version, before, after: after === before ? null : after })
-    files.push({ path: op.moveTo, absolutePath: fs.processPath(destination), from: op.path, action: 'modified', before, after })
+    files.push({ path: op.moveTo, absolutePath: fs.processPath(destination), from: op.path, action: 'modified', before, after, edits })
   }
   return { files, steps: [...writes, ...moves, ...deletes], sandboxPolicy, staging }
 }

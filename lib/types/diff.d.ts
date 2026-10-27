@@ -1,19 +1,25 @@
 /**
- * Display diffs for DSH diff cards: one entry per changed region of a file
- * (a hunk with three context lines), as the native `write` and `edit` tools
- * report them, with byte caps per entry and per call.
+ * Display diffs for DSH diff cards: one entry per changed region of a file (a hunk with three
+ * context lines around the edits the patch made), with byte caps per entry and per call.
  * @module dsh-apply-patch/diff
  */
 /** One display diff entry, in the shape DSH diff cards read. */
 export type DisplayDiff = {
     path: string;
-    /** Old lines of the hunk joined with LF, without a final line ending; `null` when the hunk has no old lines (a created or empty file). */
+    /** Old lines of the hunk as a fragment (see {@link displayDiffs}); `null` when the hunk has no old lines (a created or empty file). */
     oldText: string | null;
-    /** New lines of the hunk joined with LF, without a final line ending. */
+    /** New lines of the hunk as a fragment; `''` when it has none. */
     newText: string;
     /** True when the entry did not fit a byte cap and its texts were dropped. */
     truncated?: boolean;
 };
+/** A replaced range: `before[oldFrom, oldTo)` became `after[newFrom, newTo)` (UTF-16 offsets). */
+export interface TextEdit {
+    oldFrom: number;
+    oldTo: number;
+    newFrom: number;
+    newTo: number;
+}
 /** A file as the patch changes it, for its display diff. */
 export interface DisplayFile {
     /** Path stamped on every entry of the file. */
@@ -23,24 +29,36 @@ export interface DisplayFile {
     before: string | null;
     /** Text after the patch; `null` for a deleted file. */
     after: string | null;
-}
-/** A changed run of lines: old lines `[oldStart, oldEnd)` are replaced by new lines `[newStart, newEnd)`. */
-export interface LineChange {
-    oldStart: number;
-    oldEnd: number;
-    newStart: number;
-    newEnd: number;
+    /**
+     * For a modified file: the edits that turn `before` into `after`, in order and disjoint, as the
+     * patch made them. When omitted, one edit spans from the first to the last changed character.
+     */
+    edits?: readonly TextEdit[];
 }
 /** Context lines on each side of a hunk; changes at most twice this far apart share a hunk. */
 export declare const DIFF_CONTEXT = 3;
+/** Line shown after the last line of a fragment when the file has no final line ending, as in a unified diff. */
+export declare const NO_NEWLINE = "\\ No newline at end of file";
 /**
  * The display diffs of a patch, file by file and hunk by hunk.
- * An added file has one entry with `oldText: null`; a deleted file one entry with `newText: ''`
- * (none when its text is unknown or empty); a modified or moved file one entry per hunk
- * (none when its text is unchanged). An entry whose UTF-8 size (path, `oldText` and `newText`)
- * exceeds `maxBytes` keeps its path with empty texts and `truncated: true`; entries are kept in
- * order until the next one would bring the call over `maxTotalBytes`, and every later entry is
- * truncated too. Consecutive truncated entries of one file are merged into one.
+ *
+ * A fragment (`oldText`, `newText`) is its lines, each followed by LF (`lines.join('\n') + '\n'`),
+ * the form of a whole file text, so a reader that drops one final LF as the file's terminator
+ * gets the exact lines; CRLF and LF are not shown, a lone CR stays in its line, and a leading
+ * byte order mark is not shown. When the fragment ends with the file's last line and that line
+ * has no line ending, {@link NO_NEWLINE} follows it as one more line.
+ *
+ * A hunk covers the lines the edits touch, merged when at most `2 * DIFF_CONTEXT` unchanged lines
+ * lie between them, with up to {@link DIFF_CONTEXT} unchanged lines on each side; the common
+ * characters at both ends of an edit are not counted as changed. An added file has one entry with
+ * `oldText: null`; a deleted file one entry with `newText: ''` (none when its text is unknown or
+ * empty); a modified or moved file one entry per hunk (none when its text is unchanged).
+ *
+ * An entry whose UTF-8 size (path, `oldText` and `newText`) exceeds `maxBytes` keeps its path with
+ * empty texts and `truncated: true`; entries are kept in order until the next one would bring the
+ * call over `maxTotalBytes`, and every later entry is truncated too, without computing its texts.
+ * Consecutive truncated entries of one file are merged into one. The work is proportional to the
+ * edits and the shown lines, not to the size of the files.
  * @param files - the files in patch order.
  * @param maxBytes - UTF-8 byte cap of one entry.
  * @param maxTotalBytes - UTF-8 byte cap of all kept entries together.
@@ -48,24 +66,13 @@ export declare const DIFF_CONTEXT = 3;
  */
 export declare function displayDiffs(files: readonly DisplayFile[], maxBytes: number, maxTotalBytes: number): DisplayDiff[];
 /**
- * The hunks between two texts, each with up to {@link DIFF_CONTEXT} unchanged lines on each side.
- * A line ends after LF. Its CRLF or LF counts when lines are compared, so a change of only the
- * line ending is a hunk, and is dropped when the line is shown; a lone CR stays in its line.
- * A leading byte order mark is not shown.
+ * The hunks between two texts, as {@link displayDiffs} shows them, without byte caps.
  * @param before - old text.
  * @param after - new text.
- * @returns the hunks in file order; empty when the texts are equal.
+ * @param edits - the edits that turn `before` into `after`, in order and disjoint; when omitted, one edit spans the whole texts.
+ * @returns the hunks in file order; empty when the edits change nothing.
  */
-export declare function hunkTexts(before: string, after: string): {
+export declare function hunkTexts(before: string, after: string, edits?: readonly TextEdit[]): {
     oldText: string | null;
     newText: string;
 }[];
-/**
- * A line diff of `a` and `b`: the shortest edit script (Myers) while it is cheap, otherwise
- * lines unique to both sides (patience) split the work into parts that are diffed the same way,
- * and a part that is still too costly becomes one change. Every result turns `a` into `b`.
- * @param a - old lines.
- * @param b - new lines.
- * @returns the changed runs in order, separated by at least one equal line.
- */
-export declare function diffLines(a: readonly string[], b: readonly string[]): LineChange[];

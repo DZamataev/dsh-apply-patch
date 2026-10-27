@@ -57,6 +57,7 @@ import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
 import type { ResolvedConfig } from '../config.js';
 import type { ParsedPatch } from '../parse/types.js';
+import type { TextEdit } from '../diff.js';
 /** One file in the result. */
 export interface FileChange {
     /** The path as written in the patch (the destination of a moved file). */
@@ -68,6 +69,8 @@ export interface FileChange {
     from?: string;
     before: string | null;
     after: string | null;
+    /** For a modified file: the edits that turned `before` into `after` (see `editFile`). */
+    edits?: TextEdit[];
 }
 /** A file by its resolved target and its path as written in the patch (or the staging path). */
 interface Place {

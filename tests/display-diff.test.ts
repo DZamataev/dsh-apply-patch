@@ -1,138 +1,212 @@
 /**
- * Display diffs (`meta.diffs`): one entry per hunk with three context lines, texts joined
- * without a final line ending as the native `write`/`edit` report them, byte caps per entry
- * and per call, and resolved absolute paths for real patches.
+ * Display diffs (`meta.diffs`): one entry per hunk with three context lines around the edits the
+ * patch made, fragments as LF-terminated lines, byte caps per entry and per call, and resolved
+ * absolute paths for real patches.
  */
 
 import { chmodSync, existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { diffLines, displayDiffs, hunkTexts } from '../src/diff.js'
-import type { LineChange } from '../src/diff.js'
+import { editChunks, editFile } from '../src/apply/content.js'
+import { displayDiffs, hunkTexts } from '../src/diff.js'
+import type { TextEdit } from '../src/diff.js'
+import { parseCodexPatch } from '../src/parse/codex.js'
+import { parseUnifiedDiff } from '../src/parse/unified.js'
 import { harness } from './harness.js'
 import type { Harness } from './harness.js'
 
 const numbered = (n: number, from = 1) => Array.from({ length: n }, (_, i) => `line ${i + from}`)
 const text = (lines: readonly string[], eol = '\n') => lines.map(line => line + eol).join('')
+/** Lines as a terminated fragment. */
+const shown = (...lines: string[]) => lines.map(line => `${line}\n`).join('')
+const NO_NEWLINE = '\\ No newline at end of file'
 
-/** Apply `changes` to `a`; they must turn it into `b`. */
-const replay = (a: readonly string[], b: readonly string[], changes: readonly LineChange[]) => {
-  const out: string[] = []
+const chunksOf = (patch: string, format: 'codex' | 'unified') => {
+  const op = (format === 'codex' ? parseCodexPatch(patch) : parseUnifiedDiff(patch)).ops[0]
+  if (op.kind !== 'update') throw new Error('not an update')
+  return op.chunks
+}
+const codexPatch = (...body: string[]) => ['*** Begin Patch', '*** Update File: f', ...body, '*** End Patch'].join('\n')
+const unifiedPatch = (...body: string[]) => ['--- a/f', '+++ b/f', ...body, ''].join('\n')
+
+/** Apply `edits` to `before`; they must be in order, disjoint, and give `after`. */
+const replay = (before: string, after: string, edits: readonly TextEdit[]) => {
+  let out = ''
   let at = 0
-  for (const change of changes) {
-    expect(change.oldStart).toBeGreaterThanOrEqual(at)
-    expect(a.slice(at, change.oldStart)).toEqual(b.slice(out.length, out.length + change.oldStart - at))
-    out.push(...a.slice(at, change.oldStart), ...b.slice(change.newStart, change.newEnd))
-    expect(out.length).toBe(change.newEnd)
-    at = change.oldEnd
+  for (const edit of edits) {
+    expect(edit.oldFrom).toBeGreaterThanOrEqual(at)
+    expect(edit.oldTo).toBeGreaterThanOrEqual(edit.oldFrom)
+    out += before.slice(at, edit.oldFrom)
+    expect(out.length).toBe(edit.newFrom)
+    out += after.slice(edit.newFrom, edit.newTo)
+    at = edit.oldTo
   }
-  out.push(...a.slice(at))
-  return out
+  return out + before.slice(at)
 }
 
-const edits = (changes: readonly LineChange[]) =>
-  changes.reduce((sum, c) => sum + c.oldEnd - c.oldStart + c.newEnd - c.newStart, 0)
-
-const shortest = (a: readonly string[], b: readonly string[]) => {
-  const row = new Array<number>(b.length + 1).fill(0)
-  for (let i = a.length - 1; i >= 0; i -= 1) {
-    let diagonal = 0
-    for (let j = b.length - 1; j >= 0; j -= 1) {
-      const keep = row[j]
-      row[j] = a[i] === b[j] ? diagonal + 1 : Math.max(row[j], row[j + 1])
-      diagonal = keep
+describe('edits the patch made', () => {
+  it('turns the old text into the new one for Codex chunks and unified hunks', () => {
+    let seed = 7
+    const random = (k: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      return seed % k
     }
-  }
-  return a.length + b.length - 2 * row[0]
-}
+    for (let round = 0; round < 400; round += 1) {
+      const eol = ['\n', '\r\n', '\r'][random(3)]
+      const lines = Array.from({ length: 5 + random(30) }, (_, i) => random(4) === 0 ? '' : `r${i}`)
+      lines.push('end')
+      const before = lines.map(line => line + eol).join('').slice(0, random(3) === 0 ? -eol.length : undefined)
+      const body: string[] = []
+      for (let at = 1 + random(3); at + 2 < lines.length; at += 3 + random(5)) {
+        body.push('@@', ` ${lines[at - 1]}`)
+        const removed = random(3)
+        body.push(...lines.slice(at, at + removed).map(line => `-${line}`))
+        for (let j = removed === 0 ? 1 + random(2) : random(3); j > 0; j -= 1) body.push(`+n${round}_${j}`)
+        at += removed
+        body.push(` ${lines[at]}`)
+      }
+      if (random(3) === 0) body.push('@@', `+tail${round}`)
+      if (body.length === 0) continue
+      const patched = editChunks('f', before, chunksOf(codexPatch(...body), 'codex'), 'codex')
+      expect(replay(before, patched.text, patched.edits)).toBe(patched.text)
+    }
+    for (let round = 0; round < 200; round += 1) {
+      const lines = Array.from({ length: 12 + random(20) }, (_, i) => `u${i}${random(5) === 0 ? '\r' : ''}`)
+      const before = text(lines)
+      const hunks: string[] = []
+      for (let at = 1 + random(3); at + 3 < lines.length; at += 4 + random(4)) {
+        const added = Array.from({ length: random(3) }, (_, j) => `+m${round}_${at}_${j}`)
+        const removed = 1 + random(2)
+        hunks.push(`@@ -${at},${removed + 2} +${at},${added.length + 2} @@`, ` ${lines[at - 1]}`, ...lines.slice(at, at + removed).map(line => `-${line}`), ...added, ` ${lines[at + removed]}`)
+        at += removed
+      }
+      const patched = editChunks('f', before, chunksOf(unifiedPatch(...hunks), 'unified'), 'unified')
+      expect(replay(before, patched.text, patched.edits)).toBe(patched.text)
+    }
+  })
+
+  it('reports a Codex end of file that gains its line ending and appended lines', () => {
+    const patched = editChunks('f', 'a\nb', chunksOf(codexPatch('@@', '+c'), 'codex'), 'codex')
+    expect(patched.text).toBe('a\nb\nc\n')
+    expect(replay('a\nb', patched.text, patched.edits)).toBe(patched.text)
+    expect(hunkTexts('a\nb', patched.text, patched.edits)).toEqual([{ oldText: `a\nb\n${NO_NEWLINE}\n`, newText: shown('a', 'b', 'c') }])
+  })
+
+  it('keeps the byte order mark out of the edits retried without it', () => {
+    const before = '\uFEFFa\nb\n'
+    const patched = editFile('f', before, chunksOf(unifiedPatch('@@ -1,2 +1,2 @@', '-a', '+A', ' b'), 'unified'), 'unified')
+    expect(patched.text).toBe('\uFEFFA\nb\n')
+    expect(replay(before, patched.text, patched.edits)).toBe(patched.text)
+    expect(hunkTexts(before, patched.text, patched.edits)).toEqual([{ oldText: shown('a', 'b'), newText: shown('A', 'b') }])
+  })
+
+  it('shows an unchanged hunk of a unified diff as nothing', () => {
+    const patched = editChunks('f', 'a\nb\nc\n', chunksOf(unifiedPatch('@@ -1,3 +1,3 @@', ' a', ' b', ' c'), 'unified'), 'unified')
+    expect(patched.text).toBe('a\nb\nc\n')
+    expect(hunkTexts('a\nb\nc\n', patched.text, patched.edits)).toEqual([])
+  })
+})
 
 describe('hunks of a text change', () => {
+  const codexHunks = (before: string, ...body: string[]) => {
+    const patched = editChunks('f', before, chunksOf(codexPatch(...body), 'codex'), 'codex')
+    return hunkTexts(before, patched.text, patched.edits)
+  }
+
   it('shows edits far apart in a large file as separate hunks with three context lines', () => {
     const lines = numbered(10000)
-    const after = lines.map(line => line === 'line 10' || line === 'line 9000' ? line.toUpperCase() : line)
-    const hunks = hunkTexts(text(lines), text(after))
-    expect(hunks).toEqual([
-      { oldText: numbered(7, 7).join('\n'), newText: [...numbered(3, 7), 'LINE 10', ...numbered(3, 11)].join('\n') },
-      { oldText: numbered(7, 8997).join('\n'), newText: [...numbered(3, 8997), 'LINE 9000', ...numbered(3, 9001)].join('\n') },
+    const before = text(lines)
+    const patched = editChunks('f', before, chunksOf(codexPatch('@@', '-line 10', '+LINE 10', '@@', '-line 9000', '+LINE 9000'), 'codex'), 'codex')
+    expect(hunkTexts(before, patched.text, patched.edits)).toEqual([
+      { oldText: shown(...numbered(7, 7)), newText: shown(...numbered(3, 7), 'LINE 10', ...numbered(3, 11)) },
+      { oldText: shown(...numbered(7, 8997)), newText: shown(...numbered(3, 8997), 'LINE 9000', ...numbered(3, 9001)) },
     ])
-    const diffs = displayDiffs([{ path: '/w/big.txt', action: 'modified', before: text(lines), after: text(after) }], 16 * 1024, 128 * 1024)
+    const diffs = displayDiffs([{ path: '/w/big.txt', action: 'modified', before, after: patched.text, edits: patched.edits }], 16 * 1024, 128 * 1024)
     expect(diffs).toHaveLength(2)
     expect(diffs.every(diff => diff.truncated === undefined && diff.path === '/w/big.txt')).toBe(true)
   })
 
   it.each([
-    ['top', 0, { oldText: 'line 1\nline 2\nline 3', newText: 'new\nline 1\nline 2\nline 3' }, undefined],
-    ['middle', 5, { oldText: 'line 3\nline 4\nline 5\nline 6\nline 7\nline 8', newText: 'line 3\nline 4\nline 5\nnew\nline 6\nline 7\nline 8' }, undefined],
+    ['top', 0, { oldText: shown('line 1', 'line 2', 'line 3'), newText: shown('new', 'line 1', 'line 2', 'line 3') }, undefined],
+    ['middle', 5, { oldText: shown('line 3', 'line 4', 'line 5', 'line 6', 'line 7', 'line 8'), newText: shown('line 3', 'line 4', 'line 5', 'new', 'line 6', 'line 7', 'line 8') }, undefined],
     // Without a final line ending the old last line gains one, so it is changed too, as in a unified diff.
-    ['end', 10, { oldText: 'line 8\nline 9\nline 10', newText: 'line 8\nline 9\nline 10\nnew' }, { oldText: 'line 7\nline 8\nline 9\nline 10', newText: 'line 7\nline 8\nline 9\nline 10\nnew' }],
-  ])('shows an insertion at the %s without a final line ending', (_where, at, hunk, unterminated) => {
+    ['end', 10, { oldText: shown('line 8', 'line 9', 'line 10'), newText: shown('line 8', 'line 9', 'line 10', 'new') }, { oldText: shown('line 10', NO_NEWLINE), newText: shown('line 10', 'new', NO_NEWLINE) }],
+  ])('shows an insertion at the %s as terminated lines, marking a missing final line ending', (_where, at, hunk, unterminated) => {
     const lines = numbered(10)
     const after = [...lines.slice(0, at), 'new', ...lines.slice(at)]
     expect(hunkTexts(text(lines), text(after))).toEqual([hunk])
-    expect(hunkTexts(text(lines).slice(0, -1), text(after).slice(0, -1))).toEqual([unterminated ?? hunk])
+    const old = text(lines).slice(0, -1)
+    const neu = text(after).slice(0, -1)
+    const expected = unterminated === undefined ? hunk : { oldText: shown('line 7', 'line 8', 'line 9') + unterminated.oldText, newText: shown('line 7', 'line 8', 'line 9') + unterminated.newText }
+    expect(hunkTexts(old, neu)).toEqual([expected])
   })
 
-  it('shows a change of only the final line ending as a hunk of equal-looking lines', () => {
-    expect(hunkTexts('a\nb', 'a\nb\n')).toEqual([{ oldText: 'a\nb', newText: 'a\nb' }])
-    expect(hunkTexts('x', 'y')).toEqual([{ oldText: 'x', newText: 'y' }])
+  it('shows a blank line added or removed at the end of a hunk as a line', () => {
+    expect(hunkTexts('a\n', 'a\n\n')).toEqual([{ oldText: 'a\n', newText: 'a\n\n' }])
+    expect(hunkTexts('a\n\n', 'a\n')).toEqual([{ oldText: 'a\n\n', newText: 'a\n' }])
+    expect(hunkTexts('', '\n')).toEqual([{ oldText: null, newText: '\n' }])
+    expect(codexHunks('a\nb\n', '@@', ' a', '+', ' b')).toEqual([{ oldText: shown('a', 'b'), newText: shown('a', '', 'b') }])
+    expect(codexHunks('a\n\nb\n', '@@', ' a', '-', ' b')).toEqual([{ oldText: shown('a', '', 'b'), newText: shown('a', 'b') }])
+  })
+
+  it('marks a missing final line ending, so a change of only that ending shows', () => {
+    expect(hunkTexts('a\nb', 'a\nb\n')).toEqual([{ oldText: `a\nb\n${NO_NEWLINE}\n`, newText: 'a\nb\n' }])
+    expect(hunkTexts('x', 'y')).toEqual([{ oldText: `x\n${NO_NEWLINE}\n`, newText: `y\n${NO_NEWLINE}\n` }])
+    expect(codexHunks('a\nb\nc\nd\ne\nf\ng\nh\ni\nj', '@@', '-a', '+A')).toEqual([
+      { oldText: shown('a', 'b', 'c', 'd'), newText: shown('A', 'b', 'c', 'd') },
+      { oldText: shown('g', 'h', 'i', 'j', NO_NEWLINE), newText: shown('g', 'h', 'i', 'j') },
+    ])
   })
 
   it('keeps an empty last line as an empty line', () => {
-    expect(hunkTexts('a\n\n', 'b\n\n')).toEqual([{ oldText: 'a\n', newText: 'b\n' }])
+    expect(hunkTexts('a\n\n', 'b\n\n')).toEqual([{ oldText: 'a\n\n', newText: 'b\n\n' }])
   })
 
   it('drops CRLF and LF from shown lines, keeps a lone CR, and compares line endings', () => {
-    expect(hunkTexts('a\r\nb\r\nc\r\n', 'a\r\nB\r\nc\r\n')).toEqual([{ oldText: 'a\nb\nc', newText: 'a\nB\nc' }])
-    expect(hunkTexts('a\r\nb\r\n', 'a\r\nb\n')).toEqual([{ oldText: 'a\nb', newText: 'a\nb' }])
-    expect(hunkTexts('a\rb\n', 'a\rc\n')).toEqual([{ oldText: 'a\rb', newText: 'a\rc' }])
+    expect(hunkTexts('a\r\nb\r\nc\r\n', 'a\r\nB\r\nc\r\n')).toEqual([{ oldText: shown('a', 'b', 'c'), newText: shown('a', 'B', 'c') }])
+    expect(hunkTexts('a\r\nb\r\n', 'a\r\nb\n')).toEqual([{ oldText: shown('a', 'b'), newText: shown('a', 'b') }])
+    expect(hunkTexts('a\rb\n', 'a\rc\n')).toEqual([{ oldText: shown('a\rb'), newText: shown('a\rc') }])
+    expect(hunkTexts('a\r\nb', 'a\r\nB')).toEqual([{ oldText: shown('a', 'b', NO_NEWLINE), newText: shown('a', 'B', NO_NEWLINE) }])
+    expect(codexHunks('a\r\nb\r\n', '@@', ' a', '+', ' b')).toEqual([{ oldText: shown('a', 'b'), newText: shown('a', '', 'b') }])
   })
 
   it('does not show a leading byte order mark', () => {
-    expect(hunkTexts('\uFEFFa\nb\n', '\uFEFFa\nB\n')).toEqual([{ oldText: 'a\nb', newText: 'a\nB' }])
+    expect(hunkTexts('\uFEFFa\nb\n', '\uFEFFa\nB\n')).toEqual([{ oldText: shown('a', 'b'), newText: shown('a', 'B') }])
   })
 
   it('merges changes up to six equal lines apart into one hunk and splits them at seven', () => {
     const lines = numbered(30)
-    const change = (a: number, b: number) => lines.map((line, i) => i === a || i === b ? `${line}!` : line)
-    expect(hunkTexts(text(lines), text(change(10, 17)))).toHaveLength(1)
-    expect(hunkTexts(text(lines), text(change(10, 18)))).toHaveLength(2)
+    const change = (a: number, b: number) => codexHunks(text(lines), '@@', `-${lines[a]}`, `+${lines[a]}!`, '@@', `-${lines[b]}`, `+${lines[b]}!`)
+    expect(change(10, 17)).toHaveLength(1)
+    expect(change(10, 18)).toHaveLength(2)
   })
 
-  it('finds a shortest edit script that turns the old lines into the new ones', () => {
-    let seed = 1
-    const random = (k: number) => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff
-      return seed % k
-    }
-    for (let round = 0; round < 2000; round += 1) {
-      const alphabet = 2 + random(5)
-      const a = Array.from({ length: random(30) }, () => `l${random(alphabet)}`)
-      const b = [...a]
-      for (let e = random(6); e > 0; e -= 1) {
-        const at = random(b.length + 1)
-        if (random(2) === 0) b.splice(at, 0, `n${random(alphabet)}`)
-        else b.splice(at, 1)
-      }
-      const changes = diffLines(a, b)
-      expect(replay(a, b, changes)).toEqual(b)
-      expect(edits(changes)).toBe(shortest(a, b))
-    }
+  it('shows the lines a change replaced, not the lines it left as they were', () => {
+    expect(codexHunks(text(numbered(9)), '@@', '-line 4', '-line 5', '-line 6', '+line 4', '+LINE 5', '+line 6')).toEqual([
+      { oldText: shown(...numbered(7, 2)), newText: shown('line 2', 'line 3', 'line 4', 'LINE 5', 'line 6', 'line 7', 'line 8') },
+    ])
   })
 
-  it('stays valid and fast when the shortest edit script is too costly to search', () => {
-    const a = numbered(200_000)
-    const b = a.map((line, i) => i % 5000 === 0 ? `${line} changed` : line)
+  it('stays within the time it takes to read the hunks when many large files change in many places', () => {
+    // A 365 KB Codex patch: 50 files of 1.2 million lines, one line replaced every 2,400 lines.
+    const per = 500
+    const stride = 2400
+    const filler = 'x\n'.repeat(stride - 1)
+    const before = Array.from({ length: per }, (_, i) => `a${i}\n${filler}`).join('')
+    const body = Array.from({ length: per }, (_, i) => ['@@', `-a${i}`, `+b${i}`]).flat()
+    const patched = editChunks('f', before, chunksOf(codexPatch(...body), 'codex'), 'codex')
+    expect(patched.text).toBe(Array.from({ length: per }, (_, i) => `b${i}\n${filler}`).join(''))
+    const files = Array.from({ length: 50 }, (_, i) => ({ path: `/w/f${i}`, action: 'modified' as const, before, after: patched.text, edits: patched.edits }))
     const started = performance.now()
-    const changes = diffLines(a, b)
-    expect(performance.now() - started).toBeLessThan(2000)
-    expect(replay(a, b, changes)).toEqual(b)
-    expect(changes).toHaveLength(40)
-    // Without lines unique to both sides the costly part becomes one change.
-    const same = Array.from({ length: 200_000 }, () => 'x')
-    const other = [...same]
-    for (let i = 0; i < 200_000; i += 5000) other[i] = 'y'
-    const coarse = diffLines(same, other)
-    expect(replay(same, other, coarse)).toEqual(other)
+    const diffs = displayDiffs(files, 16 * 1024, 128 * 1024)
+    expect(performance.now() - started).toBeLessThan(1000)
+    expect(diffs.filter(diff => diff.truncated !== true).length).toBeGreaterThan(100)
+    const truncated = diffs.filter(diff => diff.truncated === true)
+    expect(truncated.length).toBeLessThanOrEqual(50)
+    expect(truncated.slice(-40)).toEqual(files.slice(10).map(file => ({ path: file.path, oldText: '', newText: '', truncated: true })))
+    // A file whose edits are not known is shown from its first to its last change, within the caps.
+    const span = displayDiffs([{ path: '/w/g', action: 'modified', before, after: patched.text }], 16 * 1024, 128 * 1024)
+    expect(span).toEqual([{ path: '/w/g', oldText: '', newText: '', truncated: true }])
   })
 })
 
@@ -142,7 +216,7 @@ describe('display diffs of a patch', () => {
       { path: '/w/n.txt', action: 'added', before: null, after: 'hello\nworld\n' },
       { path: '/w/e.txt', action: 'added', before: null, after: '' },
     ], 16 * 1024, 128 * 1024)).toEqual([
-      { path: '/w/n.txt', oldText: null, newText: 'hello\nworld' },
+      { path: '/w/n.txt', oldText: null, newText: 'hello\nworld\n' },
       { path: '/w/e.txt', oldText: null, newText: '' },
     ])
   })
@@ -152,7 +226,7 @@ describe('display diffs of a patch', () => {
       { path: '/w/gone.txt', action: 'deleted', before: 'a\nb\n', after: null },
       { path: '/w/gone.bin', action: 'deleted', before: null, after: null },
       { path: '/w/empty', action: 'deleted', before: '', after: null },
-    ], 16 * 1024, 128 * 1024)).toEqual([{ path: '/w/gone.txt', oldText: 'a\nb', newText: '' }])
+    ], 16 * 1024, 128 * 1024)).toEqual([{ path: '/w/gone.txt', oldText: 'a\nb\n', newText: '' }])
   })
 
   it('gives an unchanged moved file no entry', () => {
@@ -160,18 +234,19 @@ describe('display diffs of a patch', () => {
   })
 
   it('drops the texts of an entry over the per-entry cap and keeps the other hunks of the file', () => {
-    const lines = numbered(1000)
-    const after = lines.map((line, i) => i === 10 ? 'x'.repeat(2000) : i === 900 ? 'changed' : line)
-    expect(displayDiffs([{ path: 'f', action: 'modified', before: text(lines), after: text(after) }], 1024, 128 * 1024)).toEqual([
+    const before = text(numbered(1000))
+    const patched = editChunks('f', before, chunksOf(codexPatch('@@', '-line 11', `+${'x'.repeat(2000)}`, '@@', '-line 901', '+changed'), 'codex'), 'codex')
+    expect(displayDiffs([{ path: 'f', action: 'modified', before, after: patched.text, edits: patched.edits }], 1024, 128 * 1024)).toEqual([
       { path: 'f', oldText: '', newText: '', truncated: true },
-      { path: 'f', oldText: 'line 898\nline 899\nline 900\nline 901\nline 902\nline 903\nline 904', newText: 'line 898\nline 899\nline 900\nchanged\nline 902\nline 903\nline 904' },
+      { path: 'f', oldText: shown(...numbered(7, 898)), newText: shown('line 898', 'line 899', 'line 900', 'changed', 'line 902', 'line 903', 'line 904') },
     ])
   })
 
   it('keeps entries in order until the call cap and merges the truncated rest of each file', () => {
     const lines = numbered(400)
-    const after = lines.map((line, i) => i % 20 === 10 ? `${line}!` : line)
-    const files = ['a', 'b', 'c'].map(path => ({ path, action: 'modified' as const, before: text(lines), after: text(after) }))
+    const before = text(lines)
+    const patched = editChunks('f', before, chunksOf(codexPatch(...lines.filter((_, i) => i % 20 === 10).flatMap(line => ['@@', `-${line}`, `+${line}!`])), 'codex'), 'codex')
+    const files = ['a', 'b', 'c'].map(path => ({ path, action: 'modified' as const, before, after: patched.text, edits: patched.edits }))
     const diffs = displayDiffs(files, 16 * 1024, 4096)
     const kept = diffs.filter(diff => diff.truncated !== true)
     const size = kept.reduce((sum, diff) => sum + Buffer.byteLength(diff.path + (diff.oldText ?? '') + diff.newText), 0)
@@ -217,10 +292,10 @@ describe('display diffs of real patches', () => {
     )) as Result
     expect(result.files.map(file => file.path)).toEqual(['sub/n.txt', 'gone.txt', 'crlf.txt', 'new.txt'])
     expect(result.diffs).toEqual([
-      { path: join(h.dir, 'sub/n.txt'), oldText: 'm', newText: 'M' },
-      { path: join(h.dir, 'gone.txt'), oldText: 'g1\ng2', newText: '' },
-      { path: join(h.dir, 'crlf.txt'), oldText: 'a\nb\nc', newText: 'a\nB\nc' },
-      { path: join(h.dir, 'new.txt'), oldText: null, newText: 'x\ny' },
+      { path: join(h.dir, 'sub/n.txt'), oldText: 'm\n', newText: 'M\n' },
+      { path: join(h.dir, 'gone.txt'), oldText: 'g1\ng2\n', newText: '' },
+      { path: join(h.dir, 'crlf.txt'), oldText: 'a\nb\nc\n', newText: 'a\nB\nc\n' },
+      { path: join(h.dir, 'new.txt'), oldText: null, newText: 'x\ny\n' },
     ])
     expect(readFileSync(join(h.dir, 'crlf.txt'), 'utf8')).toBe('a\r\nB\r\nc\r\n')
   })
@@ -235,17 +310,17 @@ describe('display diffs of real patches', () => {
     expect(readFileSync(join(h.dir, 'target.txt'), 'utf8')).toBe('one\ntwo\n')
     const real = await h.run(body) as Result
     expect(dry.diffs).toEqual(real.diffs)
-    expect(real.diffs).toEqual([{ path: h.fs.processPath(await h.fs.resolve('link.txt', { cwd: h.dir })), oldText: 'one\ntwo', newText: 'one\nTWO' }])
+    expect(real.diffs).toEqual([{ path: h.fs.processPath(await h.fs.resolve('link.txt', { cwd: h.dir })), oldText: 'one\ntwo\n', newText: 'one\nTWO\n' }])
     expect(existsSync(join(h.dir, 'link.txt'))).toBe(true)
   })
 
   it('carries the entries in the result metadata and shows the kept ones on the diff card', async () => {
     const h = await open({ config: { maxDiffBytes: 256 } })
     const result = await h.execute(patch('*** Add File: small.txt', '+hi'))
-    expect(result.meta).toEqual({ diffs: [{ path: join(h.dir, 'small.txt'), oldText: null, newText: 'hi' }] })
+    expect(result.meta).toEqual({ diffs: [{ path: join(h.dir, 'small.txt'), oldText: null, newText: 'hi\n' }] })
     const definition = h.ctx.tools.get('apply_patch')
     expect(definition?.presentResult?.({ input: '' }, { content: [], isError: false, meta: result.meta })).toEqual({
-      card: 'diff', title: 'Apply patch', diffs: [{ path: join(h.dir, 'small.txt'), oldText: null, newText: 'hi' }],
+      card: 'diff', title: 'Apply patch', diffs: [{ path: join(h.dir, 'small.txt'), oldText: null, newText: 'hi\n' }],
     })
     const large = await h.execute(patch('*** Add File: large.txt', ...Array.from({ length: 100 }, (_, i) => `+row ${i}`)))
     expect(large.meta).toEqual({ diffs: [{ path: join(h.dir, 'large.txt'), oldText: null, newText: '', truncated: true }] })

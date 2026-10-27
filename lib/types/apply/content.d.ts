@@ -21,6 +21,7 @@
  * not be in file order.
  * @module dsh-apply-patch/apply/content
  */
+import type { TextEdit } from '../diff.js';
 import { PatchError } from '../errors.js';
 import type { Chunk } from '../parse/types.js';
 /**
@@ -33,8 +34,24 @@ export declare class PlacementError extends PatchError {
     readonly referenceRejects: boolean;
     constructor(message: string, referenceRejects: boolean);
 }
+/** A new file text and the edits that turned the old text into it, in order and disjoint. */
+export interface Patched {
+    text: string;
+    edits: TextEdit[];
+}
 /**
- * Compute the new text of a file.
+ * Compute the new text of a file and the edits that made it: the replaced lines of every
+ * chunk, and the line ending a Codex patch adds to an untouched last line.
+ * @param path - the path as written in the patch, for messages.
+ * @param before - the current file text.
+ * @param chunks - the chunks in file order.
+ * @param format - the patch format.
+ * @returns the new file text and its edits.
+ * @throws {@link PatchError} `PATCH_CONFLICT` when a chunk cannot be located unambiguously.
+ */
+export declare function editChunks(path: string, before: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): Patched;
+/**
+ * Compute the new text of a file ({@link editChunks} without the edits).
  * @param path - the path as written in the patch, for messages.
  * @param before - the current file text.
  * @param chunks - the chunks in file order.
@@ -58,3 +75,13 @@ export declare function applyChunks(path: string, before: string, chunks: readon
  * @throws {@link PatchError} `PATCH_CONFLICT` as {@link applyChunks}; after a retry without the mark, the retry's error.
  */
 export declare function applyToFile(path: string, text: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): string;
+/**
+ * {@link applyToFile} with the edits that made the new text, in offsets of the whole texts.
+ * @param path - the path as written in the patch, for messages.
+ * @param text - the whole file text.
+ * @param chunks - the chunks in file order.
+ * @param format - the patch format.
+ * @returns the new file text and its edits.
+ * @throws {@link PatchError} `PATCH_CONFLICT` as {@link applyToFile}.
+ */
+export declare function editFile(path: string, text: string, chunks: readonly Chunk[], format: 'unified' | 'codex'): Patched;
