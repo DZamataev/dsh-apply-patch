@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.10 (2026-10-27)
+
+- Unified: a C-quoted name keeps a leading byte order mark (was: the UTF-8 decoder dropped it, so `rename to "\357\273\277g"` created `g` where git creates U+FEFF followed by `g`, `rename from "\357\273\277f"` moved `f` instead, and a `-p0` pair `"\357\273\277f"` updated `f`).
+- Unified: a name holding a NUL byte (`"a/f\000x"`) is refused with `PATCH_UNSUPPORTED` while parsing, before anything is written (was: `PATCH_IO` from the file system); git cuts such a name at the NUL.
+- README: the refused git-accepted cases now list names with NUL bytes and a patch naming one file in several sections (git applies each section to the original file); Large files and Known limitations give the cost of many unified hunks in a very large file (8,000 one-line insertions into a 13.3 MB file: about 6.2 s, `git apply` 3.6 s).
+- Tests: three byte-order-mark names and four NUL names, each checked against the installed `git apply`.
+
 ## 1.1.9 (2026-10-27)
 
 - Unified: every file name of an operation is checked as `git apply` checks it before writing (`check_unsafe_path`, `read-cache.c` `verify_path` with git's defaults: `core.protectNTFS` on, `core.protectHFS` on macOS) and refused with `PATCH_PARSE` "invalid path": `.`, `..` and empty components, a leading `/` left after the first component is removed, a trailing `/`, a `.git` component in any case, and its NTFS and HFS+ synonyms; this covers `diff --git` sections, bare `---`/`+++` pairs and rename names (was: `--- a/./f` updated `f` and `--- a/.git/config` updated `.git/config` where git exits 128 with "invalid path"). Codex paths are unchanged.

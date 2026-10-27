@@ -517,11 +517,15 @@ function toOp(section: Section): PatchOp | null {
 /**
  * Refuse a name git refuses ({@link gitPathProblem}: git checks the old name
  * of a deletion or update and the new name of anything but a deletion, which
- * are the names of the operation) or that is not valid UTF-8.
- * @throws {@link PatchError} `PATCH_PARSE` "invalid path" for a name git refuses, `PATCH_UNSUPPORTED` for a name that is not UTF-8.
+ * are the names of the operation), that is not valid UTF-8 or that holds a
+ * NUL byte (git cuts a C-quoted name at a `\000`).
+ * @throws {@link PatchError} `PATCH_PARSE` "invalid path" for a name git refuses, `PATCH_UNSUPPORTED` for a name that is not UTF-8 or holds a NUL byte.
  */
 function checkNames(op: PatchOp, start: number): void {
   for (const name of op.kind === 'update' && op.moveTo !== undefined ? [op.path, op.moveTo] : [op.path]) {
+    if (name.includes('\0')) {
+      throw unsupported(start, `the file name ${showName(name)} holds a NUL byte; names with NUL bytes are not supported (git apply would cut the name at it and use the part before it). Send the name without the NUL byte`)
+    }
     if (hasLoneSurrogate(name)) {
       throw unsupported(start, `the file name ${showName(name)} is not valid UTF-8; apply_patch names files with UTF-8 text only. Rename the file with the shell, or send a name that is valid UTF-8`)
     }
@@ -796,7 +800,8 @@ function unquoteC(text: string, at: number): { value: string; end: number } | un
   return undefined
 }
 
-const utf8 = new TextDecoder('utf-8', { fatal: true })
+// ignoreBOM keeps a leading U+FEFF: git names a file by all of its bytes, a byte order mark included.
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 /**
  * The bytes of a name as a string: valid UTF-8 as its characters, and each

@@ -111,6 +111,7 @@ interface Case {
 
 const invalid = (name: string) => new RegExp(`^PATCH_PARSE: .*invalid path ${JSON.stringify(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
 const notUtf8 = /^PATCH_UNSUPPORTED: .*not valid UTF-8/
+const nul = /^PATCH_UNSUPPORTED: .*names with NUL bytes are not supported/
 
 const cases: Case[] = [
   // Refused by git: "invalid path".
@@ -157,6 +158,14 @@ const cases: Case[] = [
   { name: 'refuses a quoted name that is not UTF-8 in a bare pair', patch: pair('/dev/null', '"b/x\\377"', add), git: 'error', refusal: notUtf8, bytes: true },
   { name: 'refuses a truncated UTF-8 sequence in a quoted rename name', patch: 'diff --git a/f b/g\nsimilarity index 100%\nrename from f\nrename to "g\\303"\n', git: 'error', refusal: notUtf8, bytes: true },
   { name: 'refuses an encoded surrogate in a quoted name', patch: pair('/dev/null', '"b/x\\355\\240\\200"', add), git: 'error', refusal: notUtf8, bytes: true },
+  { name: 'keeps a leading byte order mark of a quoted rename destination', patch: 'diff --git a/f b/\uFEFFg\nsimilarity index 100%\nrename from f\nrename to "\\357\\273\\277g"\n', git: (({ f: _, ...rest }) => ({ ...rest, '\uFEFFg': abc }))(start) },
+  { name: 'keeps a leading byte order mark of a quoted rename source', patch: 'diff --git a/\uFEFFf b/g\nsimilarity index 100%\nrename from "\\357\\273\\277f"\nrename to g\n', files: { ...start, '\uFEFFf': 'bom\n' }, git: { ...start, g: 'bom\n' } },
+  { name: 'keeps a leading byte order mark of a quoted -p0 pair', patch: pair('"\\357\\273\\277f"', '"\\357\\273\\277f"'), files: { ...start, '\uFEFFf': abc }, git: { ...start, '\uFEFFf': 'alpha\nBETA\nomega\n' } },
+  // NUL bytes: git cuts a quoted name at "\000", which is refused here.
+  { name: 'refuses a new file whose quoted name holds a NUL byte', patch: 'diff --git "a/n\\000suffix" "b/n\\000suffix"\nnew file mode 100644\n', git: { ...start, n: '' }, refusal: nul },
+  { name: 'refuses a rename to a quoted name holding a NUL byte', patch: 'diff --git a/f "b/g\\000x"\nsimilarity index 100%\nrename from f\nrename to "g\\000x"\n', git: (({ f: _, ...rest }) => ({ ...rest, g: abc }))(start), refusal: nul },
+  { name: 'refuses a quoted -p0 pair holding a NUL byte', patch: pair('"f\\000suffix"', '"f\\000suffix"'), git: updated('f'), refusal: nul },
+  { name: 'refuses a quoted name starting with a NUL byte', patch: 'diff --git "a/\\000f" "b/\\000f"\nnew file mode 100644\n', git: 'error', refusal: nul },
   { name: 'skips a "diff --git" line with a name that is not UTF-8, as git skips it as text', patch: `diff --git "a/\\377" "b/\\377"\nprose\n${pair('a/f', 'b/f')}`, git: updated('f') },
 ]
 
