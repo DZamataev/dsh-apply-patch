@@ -46,6 +46,12 @@
  * - the last line of the text may lack its LF (git rejects such a diff as corrupt);
  * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it), a CR or the end of the line; spaces around it are part of the path, except before a timestamp ending a bare `---`/`+++` line. Quoted C-style paths are decoded as git `unquote_c_style` decodes them; text after the closing quote is ignored.
  *
+ * The names an operation uses are checked as git checks them before writing
+ * ({@link gitPathProblem}: no `.`, `..`, empty or `.git` components, no
+ * leading or trailing `/`), and must be valid UTF-8 (`PATCH_UNSUPPORTED`
+ * otherwise). The patch text arrives as a string, so bytes that are not UTF-8
+ * come only from octal escapes of a C-quoted name, which are decoded strictly.
+ *
  * In a `diff --git` section the file moves when its old and new names differ
  * (`rename from`/`rename to`, or differing `---`/`+++` names), as with git;
  * `---`/`+++ /dev/null` there needs the `new file mode`/`deleted file mode`
