@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.14 (2026-10-27)
+
+- Display fragments no longer get a `\ No newline at end of file` line: a side that ends at the file's last line without a line ending ends without LF instead, so DSH's Web `DiffBlock` shows exactly the file's lines (was: the marker shown as a content line and counted, so `first\nlast` → `first\nLAST\n` showed −2 +1 instead of −1 +1 and the card header disagreed with the workspace summary). A change of only the final line ending now shows as equal sides; its entry is still emitted.
+- Patch parsing and application are unchanged (the byte-regression cases give the same bytes).
+- README: the fragment convention for a last line without a line ending and its known limitation.
+- Tests: a missing final line ending on the old side, the new side, both, an unchanged last line in the context, CRLF, added and deleted files without a final newline, and the `tail.txt` patch end to end.
+
 ## 1.1.13 (2026-10-27)
 
 - Display diffs are built from the edits the patch made (each Codex change and unified hunk where it was applied, and the line ending a Codex patch adds to a last line without one), with 3 context lines and edits at most 6 unchanged lines apart merged, so the work follows the patch, not the file sizes (was: whole old and new texts diffed per file, every file even after `maxDiffTotalBytes` was full; a valid 365 KB Codex patch changing 50 files of 1.2 million lines took 4.1 s and +346 MiB for the display diffs alone, now about 3 ms and under 1 MiB; one such file with 1,200 one-line changes 0.69 s and +394 MiB, now about 1.4 ms). Once the call cap is reached, the rest of each file gets one truncated entry without its texts being computed; a hunk too large for `maxDiffBytes` is not sliced. Hunks follow the edits rather than a shortest diff, so their boundaries may differ from a line diff of the whole files.

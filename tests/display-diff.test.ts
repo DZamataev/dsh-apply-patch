@@ -1,6 +1,6 @@
 /**
  * Display diffs (`meta.diffs`): one entry per hunk with three context lines around the edits the
- * patch made, fragments as LF-terminated lines, byte caps per entry and per call, and resolved
+ * patch made, fragments as LF-terminated lines (without the LF a file's last line lacks), byte caps per entry and per call, and resolved
  * absolute paths for real patches.
  */
 
@@ -19,7 +19,8 @@ const numbered = (n: number, from = 1) => Array.from({ length: n }, (_, i) => `l
 const text = (lines: readonly string[], eol = '\n') => lines.map(line => line + eol).join('')
 /** Lines as a terminated fragment. */
 const shown = (...lines: string[]) => lines.map(line => `${line}\n`).join('')
-const NO_NEWLINE = '\\ No newline at end of file'
+/** Lines ending at a last line without a line ending, as a fragment. */
+const unterminated = (...lines: string[]) => lines.join('\n')
 
 const chunksOf = (patch: string, format: 'codex' | 'unified') => {
   const op = (format === 'codex' ? parseCodexPatch(patch) : parseUnifiedDiff(patch)).ops[0]
@@ -89,7 +90,7 @@ describe('edits the patch made', () => {
     const patched = editChunks('f', 'a\nb', chunksOf(codexPatch('@@', '+c'), 'codex'), 'codex')
     expect(patched.text).toBe('a\nb\nc\n')
     expect(replay('a\nb', patched.text, patched.edits)).toBe(patched.text)
-    expect(hunkTexts('a\nb', patched.text, patched.edits)).toEqual([{ oldText: `a\nb\n${NO_NEWLINE}\n`, newText: shown('a', 'b', 'c') }])
+    expect(hunkTexts('a\nb', patched.text, patched.edits)).toEqual([{ oldText: unterminated('a', 'b'), newText: shown('a', 'b', 'c') }])
   })
 
   it('keeps the byte order mark out of the edits retried without it', () => {
@@ -130,14 +131,14 @@ describe('hunks of a text change', () => {
     ['top', 0, { oldText: shown('line 1', 'line 2', 'line 3'), newText: shown('new', 'line 1', 'line 2', 'line 3') }, undefined],
     ['middle', 5, { oldText: shown('line 3', 'line 4', 'line 5', 'line 6', 'line 7', 'line 8'), newText: shown('line 3', 'line 4', 'line 5', 'new', 'line 6', 'line 7', 'line 8') }, undefined],
     // Without a final line ending the old last line gains one, so it is changed too, as in a unified diff.
-    ['end', 10, { oldText: shown('line 8', 'line 9', 'line 10'), newText: shown('line 8', 'line 9', 'line 10', 'new') }, { oldText: shown('line 10', NO_NEWLINE), newText: shown('line 10', 'new', NO_NEWLINE) }],
-  ])('shows an insertion at the %s as terminated lines, marking a missing final line ending', (_where, at, hunk, unterminated) => {
+    ['end', 10, { oldText: shown('line 8', 'line 9', 'line 10'), newText: shown('line 8', 'line 9', 'line 10', 'new') }, { oldText: unterminated('line 10'), newText: unterminated('line 10', 'new') }],
+  ])('shows an insertion at the %s as terminated lines, leaving out a missing final line ending', (_where, at, hunk, tail) => {
     const lines = numbered(10)
     const after = [...lines.slice(0, at), 'new', ...lines.slice(at)]
     expect(hunkTexts(text(lines), text(after))).toEqual([hunk])
     const old = text(lines).slice(0, -1)
     const neu = text(after).slice(0, -1)
-    const expected = unterminated === undefined ? hunk : { oldText: shown('line 7', 'line 8', 'line 9') + unterminated.oldText, newText: shown('line 7', 'line 8', 'line 9') + unterminated.newText }
+    const expected = tail === undefined ? hunk : { oldText: shown('line 7', 'line 8', 'line 9') + tail.oldText, newText: shown('line 7', 'line 8', 'line 9') + tail.newText }
     expect(hunkTexts(old, neu)).toEqual([expected])
   })
 
@@ -149,13 +150,24 @@ describe('hunks of a text change', () => {
     expect(codexHunks('a\n\nb\n', '@@', ' a', '-', ' b')).toEqual([{ oldText: shown('a', '', 'b'), newText: shown('a', 'b') }])
   })
 
-  it('marks a missing final line ending, so a change of only that ending shows', () => {
-    expect(hunkTexts('a\nb', 'a\nb\n')).toEqual([{ oldText: `a\nb\n${NO_NEWLINE}\n`, newText: 'a\nb\n' }])
-    expect(hunkTexts('x', 'y')).toEqual([{ oldText: `x\n${NO_NEWLINE}\n`, newText: `y\n${NO_NEWLINE}\n` }])
+  it('leaves out the line ending a last line lacks, on the old side, the new side or both', () => {
+    // Old side only: the tail.txt case, `first\nlast` -> `first\nLAST\n`, is one line removed and one added.
+    expect(hunkTexts('first\nlast', 'first\nLAST\n')).toEqual([{ oldText: unterminated('first', 'last'), newText: shown('first', 'LAST') }])
+    expect(hunkTexts('a\nb\n', 'a\nB')).toEqual([{ oldText: shown('a', 'b'), newText: unterminated('a', 'B') }])
+    expect(hunkTexts('x', 'y')).toEqual([{ oldText: 'x', newText: 'y' }])
+    expect(hunkTexts('a\nb\nc', 'A\nb\nc')).toEqual([{ oldText: unterminated('a', 'b', 'c'), newText: unterminated('A', 'b', 'c') }])
+    // A last line left unchanged inside the context keeps lacking its line ending on both sides.
+    expect(hunkTexts('a\nb\nc\nd', 'a\nB\nc\nd')).toEqual([{ oldText: unterminated('a', 'b', 'c', 'd'), newText: unterminated('a', 'B', 'c', 'd') }])
+  })
+
+  it('still lists a change of only the final line ending, with sides that look equal', () => {
+    expect(hunkTexts('a\nb', 'a\nb\n')).toEqual([{ oldText: unterminated('a', 'b'), newText: shown('a', 'b') }])
+    expect(hunkTexts('a\nb\n', 'a\nb')).toEqual([{ oldText: shown('a', 'b'), newText: unterminated('a', 'b') }])
     expect(codexHunks('a\nb\nc\nd\ne\nf\ng\nh\ni\nj', '@@', '-a', '+A')).toEqual([
       { oldText: shown('a', 'b', 'c', 'd'), newText: shown('A', 'b', 'c', 'd') },
-      { oldText: shown('g', 'h', 'i', 'j', NO_NEWLINE), newText: shown('g', 'h', 'i', 'j') },
+      { oldText: unterminated('g', 'h', 'i', 'j'), newText: shown('g', 'h', 'i', 'j') },
     ])
+    expect(displayDiffs([{ path: '/w/f', action: 'modified', before: 'a', after: 'a\n' }], 16 * 1024, 128 * 1024)).toEqual([{ path: '/w/f', oldText: 'a', newText: 'a\n' }])
   })
 
   it('keeps an empty last line as an empty line', () => {
@@ -166,7 +178,8 @@ describe('hunks of a text change', () => {
     expect(hunkTexts('a\r\nb\r\nc\r\n', 'a\r\nB\r\nc\r\n')).toEqual([{ oldText: shown('a', 'b', 'c'), newText: shown('a', 'B', 'c') }])
     expect(hunkTexts('a\r\nb\r\n', 'a\r\nb\n')).toEqual([{ oldText: shown('a', 'b'), newText: shown('a', 'b') }])
     expect(hunkTexts('a\rb\n', 'a\rc\n')).toEqual([{ oldText: shown('a\rb'), newText: shown('a\rc') }])
-    expect(hunkTexts('a\r\nb', 'a\r\nB')).toEqual([{ oldText: shown('a', 'b', NO_NEWLINE), newText: shown('a', 'B', NO_NEWLINE) }])
+    expect(hunkTexts('a\r\nb', 'a\r\nB')).toEqual([{ oldText: unterminated('a', 'b'), newText: unterminated('a', 'B') }])
+    expect(hunkTexts('a\r\nb', 'a\r\nb\r\nc\r\n')).toEqual([{ oldText: unterminated('a', 'b'), newText: shown('a', 'b', 'c') }])
     expect(codexHunks('a\r\nb\r\n', '@@', ' a', '+', ' b')).toEqual([{ oldText: shown('a', 'b'), newText: shown('a', '', 'b') }])
   })
 
@@ -214,9 +227,11 @@ describe('display diffs of a patch', () => {
   it('gives an added file one entry with oldText null, also when it is empty', () => {
     expect(displayDiffs([
       { path: '/w/n.txt', action: 'added', before: null, after: 'hello\nworld\n' },
+      { path: '/w/u.txt', action: 'added', before: null, after: 'hello\r\nworld' },
       { path: '/w/e.txt', action: 'added', before: null, after: '' },
     ], 16 * 1024, 128 * 1024)).toEqual([
       { path: '/w/n.txt', oldText: null, newText: 'hello\nworld\n' },
+      { path: '/w/u.txt', oldText: null, newText: 'hello\nworld' },
       { path: '/w/e.txt', oldText: null, newText: '' },
     ])
   })
@@ -226,7 +241,8 @@ describe('display diffs of a patch', () => {
       { path: '/w/gone.txt', action: 'deleted', before: 'a\nb\n', after: null },
       { path: '/w/gone.bin', action: 'deleted', before: null, after: null },
       { path: '/w/empty', action: 'deleted', before: '', after: null },
-    ], 16 * 1024, 128 * 1024)).toEqual([{ path: '/w/gone.txt', oldText: 'a\nb\n', newText: '' }])
+      { path: '/w/tail.txt', action: 'deleted', before: 'a\nb', after: null },
+    ], 16 * 1024, 128 * 1024)).toEqual([{ path: '/w/gone.txt', oldText: 'a\nb\n', newText: '' }, { path: '/w/tail.txt', oldText: 'a\nb', newText: '' }])
   })
 
   it('gives an unchanged moved file no entry', () => {
@@ -298,6 +314,19 @@ describe('display diffs of real patches', () => {
       { path: join(h.dir, 'new.txt'), oldText: null, newText: 'x\ny\n' },
     ])
     expect(readFileSync(join(h.dir, 'crlf.txt'), 'utf8')).toBe('a\r\nB\r\nc\r\n')
+  })
+
+  it('shows a file without a final newline as its lines on both sides', async () => {
+    const h = await open()
+    writeFileSync(join(h.dir, 'tail.txt'), 'first\nlast')
+    writeFileSync(join(h.dir, 'gone.txt'), 'g1\ng2')
+    for (const name of ['tail.txt', 'gone.txt']) await h.observe(name)
+    const result = await h.run(patch('*** Update File: tail.txt', '@@', '-last', '+LAST', '*** Delete File: gone.txt')) as Result
+    expect(readFileSync(join(h.dir, 'tail.txt'), 'utf8')).toBe('first\nLAST\n')
+    expect(result.diffs).toEqual([
+      { path: join(h.dir, 'tail.txt'), oldText: 'first\nlast', newText: 'first\nLAST\n' },
+      { path: join(h.dir, 'gone.txt'), oldText: 'g1\ng2', newText: '' },
+    ])
   })
 
   it('reports the same entries for a dry run, and the file a link points to', async () => {
