@@ -219,30 +219,100 @@ function imageHash(line: ImageLine): number {
  * The old lines of a hunk as plain `git apply` matches them (`match_fragment`):
  * each old line must hash like the unpatched image line at its index, and the
  * old lines' bytes, joined, must be a prefix of the image bytes from the first
- * one on (with `atEnd`, reach exactly to the end). A line followed by `\ No
- * newline at end of file` has no LF, so git also matches it against a line
- * that has one and joins the next line onto the new text; without such lines
- * this is exactly {@link fits}.
+ * one on (with `atEnd`, reach exactly to the end). Only the last old line can
+ * lack its LF (`\ No newline at end of file`); git then also matches it
+ * against an image line that only starts with it (one that has an LF, or more
+ * text that hashes to nothing, such as trailing spaces) and joins the next line
+ * onto the new text. Without such a line this is exactly {@link fits}.
+ * `work` counts the lines compared, for {@link nearestMatch}.
  */
-function gitMatcher(old: readonly Line[]): (image: readonly ImageLine[], at: number, atEnd: boolean) => boolean {
+interface GitMatcher { test(image: readonly ImageLine[], at: number, atEnd: boolean): boolean; work: number }
+
+function gitMatcher(old: readonly Line[]): GitMatcher {
   const hashes = old.map(line => gitHash(key(line)))
   const bytes = old.map(key).join('')
-  return (image, at, atEnd) => {
-    if (at + old.length > image.length) return false
-    for (let j = 0; j < old.length; j += 1) if (image[at + j].patched || imageHash(image[at + j]) !== hashes[j]) return false
-    let pos = 0
-    let i = at
-    for (; pos < bytes.length; i += 1) {
-      if (i === image.length) return false
-      const { text, eol } = image[i]
-      if (text.length + eol.length > bytes.length - pos) return !atEnd && key(image[i]).startsWith(bytes.slice(pos))
-      if (!bytes.startsWith(text, pos) || !bytes.startsWith(eol, pos + text.length)) return false
-      pos += text.length + eol.length
-    }
-    if (!atEnd) return true
-    for (; i < image.length; i += 1) if (image[i].text.length + image[i].eol.length > 0) return false
-    return true
+  const matcher: GitMatcher = {
+    work: 0,
+    test(image, at, atEnd) {
+      matcher.work += 1
+      if (at + old.length > image.length) return false
+      for (let j = 0; j < old.length; j += 1) {
+        matcher.work += 1
+        if (image[at + j].patched || imageHash(image[at + j]) !== hashes[j]) return false
+      }
+      matcher.work += old.length
+      let pos = 0
+      let i = at
+      for (; pos < bytes.length; i += 1) {
+        if (i === image.length) return false
+        const { text, eol } = image[i]
+        if (text.length + eol.length > bytes.length - pos) return !atEnd && key(image[i]).startsWith(bytes.slice(pos))
+        if (!bytes.startsWith(text, pos) || !bytes.startsWith(eol, pos + text.length)) return false
+        pos += text.length + eol.length
+      }
+      if (!atEnd) return true
+      for (; i < image.length; i += 1) if (image[i].text.length + image[i].eol.length > 0) return false
+      return true
+    },
   }
+  return matcher
+}
+
+/**
+ * Every start where {@link gitMatcher} holds (without `atEnd`), ascending, in
+ * one Knuth-Morris-Pratt pass over the image: the old lines with an LF must
+ * equal unpatched image lines exactly, and a last old line without an LF must
+ * hash like an unpatched image line that starts with it.
+ */
+function gitMatches(image: readonly ImageLine[], old: readonly Line[]): number[] {
+  const last = old.at(-1)
+  if (last === undefined) return Array.from({ length: image.length + 1 }, (_, i) => i)
+  if (last.eol !== '') return occurrences(image, old, 0, Infinity)
+  const hash = gitHash(last.text)
+  const lastFits = (line: ImageLine) => !line.patched && imageHash(line) === hash && key(line).startsWith(last.text)
+  const m = old.length
+  const heads = m === 1 ? Array.from({ length: image.length }, (_, i) => i) : occurrences(image, old.slice(0, -1), 0, Infinity)
+  return heads.filter(start => start + m <= image.length && lastFits(image[start + m - 1]))
+}
+
+/**
+ * The place of a hunk nearest to `line` in git's search order (`find_pos`):
+ * `line`, then one line forward, one backward, two forward and so on, so of
+ * two equally distant places the later one wins. Places are tried one by one,
+ * as git does, while that costs at most about the size of the image; then all
+ * places are found in one pass ({@link gitMatches}), so that a large hunk far
+ * from its header in a repetitive file costs O(image + hunk) lines, not their
+ * product.
+ * @returns the place, or -1.
+ */
+function nearestMatch(image: readonly ImageLine[], old: readonly Line[], line: number, matcher: GitMatcher): number {
+  const n = image.length
+  const budget = 2 * (n + old.length) + 64
+  matcher.work = 0
+  let backward = line
+  let forward = line
+  let at = line
+  for (let i = 0; !matcher.test(image, at, false); i += 1) {
+    if (backward === 0 && forward === n) return -1
+    if (matcher.work > budget) return nearest(gitMatches(image, old), line)
+    at = (i % 2 === 1 && backward > 0) || forward === n ? (backward -= 1) : (forward += 1)
+  }
+  return at
+}
+
+/** Of ascending `places`, the one nearest to `line`, the later one of two equally near; -1 when there is none. */
+function nearest(places: readonly number[], line: number): number {
+  let low = 0
+  let high = places.length
+  while (low < high) {
+    const mid = (low + high) >>> 1
+    if (places[mid] < line) low = mid + 1
+    else high = mid
+  }
+  const after = low < places.length ? places[low] : undefined
+  const before = low > 0 ? places[low - 1] : undefined
+  if (after === undefined) return before ?? -1
+  return before === undefined || after - line <= line - before ? after : before
 }
 
 /**
@@ -266,20 +336,15 @@ function place(path: string, image: readonly ImageLine[], chunk: Chunk, old: rea
   const trailing = trailingContext(chunk)
   const atStart = (chunk.oldStart ?? 0) <= 1
   const atEnd = trailing === 0
-  const matches = gitMatcher(old)
-  const ok = (at: number) => (!atStart || at === 0) && (!atEnd || at + old.length === image.length) && matches(image, at, atEnd)
+  const matcher = gitMatcher(old)
   const n = image.length
-  let line = atStart ? 0 : atEnd ? n - old.length : Math.max(0, (chunk.newStart ?? 1) - 1)
-  if (line < 0 || line > n) line = n
-  let backward = line
-  let forward = line
-  let at = line
-  for (let i = 0; !ok(at); i += 1) {
-    if (backward === 0 && forward === n) {
-      at = -1
-      break
-    }
-    at = (i % 2 === 1 && backward > 0) || forward === n ? (backward -= 1) : (forward += 1)
+  let at: number
+  if (atStart || atEnd) {
+    // The only place git accepts.
+    const only = atStart ? 0 : n - old.length
+    at = only >= 0 && (!atEnd || only + old.length === n) && matcher.test(image, only, atEnd) ? only : -1
+  } else {
+    at = nearestMatch(image, old, Math.min(n, Math.max(0, (chunk.newStart ?? 1) - 1)), matcher)
   }
   const advice = 'Include the unchanged lines around each change as context (as git diff does by default), or use the Codex patch format.'
   if (at >= 0 && !fits(image, old, at)) {
@@ -307,13 +372,21 @@ function placeUnnumbered(path: string, image: readonly ImageLine[], chunk: Chunk
 }
 
 /**
- * The first index at or after `from` where {@link fits} holds, or -1: one
- * Knuth-Morris-Pratt pass over the image, so the time is linear in the image
- * and `old` however many near matches the image has. A patched image line
- * equals no line of `old`. An empty `old` fits at `from` when that is a line of the image.
+ * The first index at or after `from` where {@link fits} holds, or -1. An
+ * empty `old` fits at `from` when that is a line of the image.
  */
 function firstFit(image: readonly ImageLine[], old: readonly Line[], from: number): number {
   if (old.length === 0) return from < image.length ? from : -1
+  return occurrences(image, old, from, 1)[0] ?? -1
+}
+
+/**
+ * The first `limit` indices at or after `from` where the non-empty `old`
+ * {@link fits}, ascending, overlapping ones included: one Knuth-Morris-Pratt
+ * pass over the image, so the time is linear in the image and `old` however
+ * many near matches the image has. A patched image line equals no line of `old`.
+ */
+function occurrences(image: readonly ImageLine[], old: readonly Line[], from: number, limit: number): number[] {
   const same = (a: Line, b: Line) => a.text === b.text && a.eol === b.eol
   // fail[j]: length of the longest proper prefix of old[0..j] that is also its suffix.
   const fail = new Int32Array(old.length)
@@ -323,12 +396,16 @@ function firstFit(image: readonly ImageLine[], old: readonly Line[], from: numbe
     fail[j] = q
   }
   const equal = (i: number, q: number) => !image[i].patched && same(image[i], old[q])
-  for (let i = from, q = 0; i < image.length; i += 1) {
+  const found: number[] = []
+  for (let i = from, q = 0; i < image.length && found.length < limit; i += 1) {
     while (q > 0 && !equal(i, q)) q = fail[q - 1]
     if (equal(i, q)) q += 1
-    if (q === old.length) return i - old.length + 1
+    if (q === old.length) {
+      found.push(i - old.length + 1)
+      q = fail[q - 1]
+    }
   }
-  return -1
+  return found
 }
 
 /** Context lines after the last change, as git counts them. */

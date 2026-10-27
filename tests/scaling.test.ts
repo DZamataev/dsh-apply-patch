@@ -142,6 +142,60 @@ describe('repetitive files', () => {
 
 const hasGit = spawnSync('git', ['--version']).status === 0
 
+/** `git apply` of `patch` to a file `f` holding `before`: the new text, or `'error'`. */
+function gitApply(before: string, patch: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'ap-scaling-'))
+  try {
+    writeFileSync(join(dir, 'f'), before)
+    writeFileSync(join(dir, '.patch'), patch)
+    return spawnSync('git', ['apply', '.patch'], { cwd: dir }).status === 0 ? readFileSync(join(dir, 'f'), 'utf8') : 'error'
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+describe('relocated numbered unified hunks', () => {
+  const row = '0,0,0,0,0,0,0,0'
+  const tag = '1,1,1,1,1,1,1,1'
+  const n = 200_000
+
+  it('places a hunk removing 6,000 identical lines, whose header is 194,000 lines off, near the end of 200,000 identical lines in under 2 s, as git apply does', () => {
+    const m = 6000
+    const before = `${row}\n`.repeat(n) + `${tag}\nend\n`
+    const patch = `--- a/f\n+++ b/f\n@@ -2,${m + 2} +2,3 @@\n ${row}\n${`-${row}\n`.repeat(m - 1)}-${tag}\n+changed\n end\n`
+    const { text, ms } = timed(before, patch, 'unified')
+    const expected = `${row}\n`.repeat(n - m + 1) + 'changed\nend\n'
+    expect(text === expected).toBe(true)
+    expect(ms).toBeLessThan(2000)
+    if (hasGit) expect(gitApply(before, patch) === expected).toBe(true)
+  })
+
+  it('places a hunk ending in a line without a newline far from its header in a file of identical lines in under 2 s, as git apply does', () => {
+    const m = 6000
+    const before = `${row}\n`.repeat(n) + tag
+    const patch = `--- a/f\n+++ b/f\n@@ -2,${m + 1} +2,${m + 1} @@\n${` ${row}\n`.repeat(m - 1)}-${row}\n+changed\n ${tag}\n\\ No newline at end of file\n`
+    const { text, ms } = timed(before, patch, 'unified')
+    const expected = `${row}\n`.repeat(n - 1) + `changed\n${tag}`
+    expect(text === expected).toBe(true)
+    expect(ms).toBeLessThan(2000)
+    if (hasGit) expect(gitApply(before, patch) === expected).toBe(true)
+  })
+
+  it('applies 2,000 hunks whose headers are each 5 lines off to a file of 200,000 lines in under 2 s', () => {
+    const lines = Array.from({ length: n }, (_, i) => `line_${i}_abcdefghijklmnopqrstuvwxyz`)
+    const changed = [...lines]
+    let patch = '--- a/f\n+++ b/f\n'
+    for (let j = 0; j < 2000; j += 1) {
+      const at = 10 + j * 99
+      changed[at] = `${lines[at]}_changed`
+      patch += `@@ -${at + 5},3 +${at + 5},3 @@\n ${lines[at - 1]}\n-${lines[at]}\n+${changed[at]}\n ${lines[at + 1]}\n`
+    }
+    const { text, ms } = timed(`${lines.join('\n')}\n`, patch, 'unified')
+    expect(text === `${changed.join('\n')}\n`).toBe(true)
+    expect(ms).toBeLessThan(2000)
+  })
+})
+
 /**
  * Multi-hunk diffs that `git diff` writes for random edits of a file with CRLF
  * lines and without its final newline, applied in their order, reversed and
