@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.12 (2026-10-27)
+
+- Display diffs (`diffs` in the result value and `meta.diffs`): one entry per hunk with up to 3 context lines, as native `write`/`edit` report them, with old and new lines joined by LF without a final line ending (was: one region per file from the first to the last change plus 3 lines, ending with or without a line ending depending on how close the change was to the end of the file, and dropped as a whole when edits far apart made it larger than `maxDiffBytes`). CRLF and LF are not shown, a leading byte order mark neither; an added file has one entry with `oldText: null`, a deleted file one with `newText: ''` (none for a binary or empty one), an unchanged moved file none.
+- Display diffs name the resolved absolute path (`ctx.fs.processPath`, the destination of a move), as native `write`/`edit` do in their metadata; the files list and the text keep the paths as written.
+- `maxDiffBytes` caps one entry (path and texts); new `maxDiffTotalBytes` (default 128 KiB) caps all entries of a call: later entries keep only their path with `truncated: true`, merged per file.
+- Patch parsing and application are unchanged (the 1011 byte-regression cases give the same bytes).
+- README: display diffs, the new option, what DSH's Web client reads.
+- Tests: hunks for far-apart edits in a large file, insertions at the top, middle and end with and without a final line ending, CRLF, byte order mark, merging, caps, shortest edit scripts against a brute-force count, the costly-diff fallback, added, deleted, moved and linked files with absolute paths, dry run, result metadata and the diff card.
+
 ## 1.1.11 (2026-10-27)
 
 - Unified: a NUL byte or a name that is not valid UTF-8 is refused with `PATCH_UNSUPPORTED` on every name as written, before the first path component is removed, `-p0` is guessed, a timestamp is cut or names are compared: the `diff --git` line (when header lines follow it), `---`/`+++` names of `diff --git` sections and of bare pairs with hunks, `rename from`/`rename to` (was: checked on the name that was left, so `--- "a\000z/f"` / `+++ "b\000z/f"` updated `f` where git cuts the names to `a` and `b`, guesses `-p0` and updates `b`, and the `diff --git` form, which git rejects, was accepted; `"a\377/f"` was read as `f`). A lone surrogate inside a quoted name is refused too (was: read as U+FFFD).
