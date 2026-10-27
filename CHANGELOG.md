@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.13 (2026-10-27)
+
+- Display diffs are built from the edits the patch made (each Codex change and unified hunk where it was applied, and the line ending a Codex patch adds to a last line without one), with 3 context lines and edits at most 6 unchanged lines apart merged, so the work follows the patch, not the file sizes (was: whole old and new texts diffed per file, every file even after `maxDiffTotalBytes` was full; a valid 365 KB Codex patch changing 50 files of 1.2 million lines took 4.1 s and +346 MiB for the display diffs alone, now about 3 ms and under 1 MiB; one such file with 1,200 one-line changes 0.69 s and +394 MiB, now about 1.4 ms). Once the call cap is reached, the rest of each file gets one truncated entry without its texts being computed; a hunk too large for `maxDiffBytes` is not sliced. Hunks follow the edits rather than a shortest diff, so their boundaries may differ from a line diff of the whole files.
+- Display fragments are their lines each followed by LF, the form of a whole file text (was: joined without a final LF, so DSH's Web `DiffBlock`, which drops one final LF as the file's terminator, showed a blank line added or removed at the end of a hunk, `a\n` → `a\n\n`, as equal sides). A fragment that ends with a last line without a line ending is followed by the line `\ No newline at end of file`, so adding or removing only that ending shows as a changed line.
+- Patch parsing and application are unchanged (the 1011 byte-regression cases give the same bytes).
+- README: how the regions are found, the fragment convention and why, the cost.
+- Tests: edits replayed against random Codex and unified patches, blank lines added and removed at the end of a hunk, CRLF, files without a final line ending, byte order mark retries, unchanged unified hunks, and a bound for the 50-file workload above.
+
 ## 1.1.12 (2026-10-27)
 
 - Display diffs (`diffs` in the result value and `meta.diffs`): one entry per hunk with up to 3 context lines, as native `write`/`edit` report them, with old and new lines joined by LF without a final line ending (was: one region per file from the first to the last change plus 3 lines, ending with or without a line ending depending on how close the change was to the end of the file, and dropped as a whole when edits far apart made it larger than `maxDiffBytes`). CRLF and LF are not shown, a leading byte order mark neither; an added file has one entry with `oldText: null`, a deleted file one with `newText: ''` (none for a binary or empty one), an unchanged moved file none.
