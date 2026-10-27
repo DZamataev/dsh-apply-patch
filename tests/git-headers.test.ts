@@ -318,3 +318,69 @@ function diagnose(patch: string): string {
     return error instanceof Error ? error.message : String(error)
   }
 }
+
+/**
+ * CRs in the patch text. git reads a CR as part of the line it ends: in a
+ * `diff --git` line it belongs to the second name, so a CRLF line has no
+ * default name; it ends a `---`/`+++` or rename name; a line holding only a CR
+ * is not a hunk line. Every case is compared with `git apply`; generated
+ * variants may only be refused where git applies them, never applied
+ * differently.
+ */
+describe('CR in the patch text', () => {
+  const crlf = (text: string) => text.replaceAll('\n', '\r\n')
+  const empty = { f: '' }
+  const crlfFile = { f: 'a\r\nb\r\n' }
+  const cases: { name: string; start: Record<string, string>; patch: string; git: Outcome }[] = [
+    { name: 'rejects a CRLF new empty file whose names differ by the CR', start: {}, patch: crlf('diff --git a/f b/f\nnew file mode 100644\n'), git: 'error' },
+    { name: 'rejects a CRLF deleted empty file whose names differ by the CR', start: empty, patch: crlf('diff --git a/f b/f\ndeleted file mode 100644\n'), git: 'error' },
+    { name: 'rejects a CRLF section named only by its "diff --git" line', start: crlfFile, patch: crlf('diff --git a/f b/f\nindex 1234567..abcdef0 100644\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n'), git: 'error' },
+    { name: 'renames with CRLF rename lines', start: empty, patch: crlf('diff --git a/f b/g\nsimilarity index 100%\nrename from f\nrename to g\n'), git: { g: '' } },
+    { name: 'creates a CRLF new empty file named by "---"/"+++" lines', start: {}, patch: crlf('diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n'), git: { f: '' } },
+    { name: 'creates a CRLF new empty file with quoted names', start: {}, patch: crlf('diff --git "a/f" "b/f"\nnew file mode 100644\n'), git: { f: '' } },
+    { name: 'creates a CRLF new empty file with a quoted second name', start: {}, patch: crlf('diff --git a/f "b/f"\nnew file mode 100644\n'), git: { f: '' } },
+    { name: 'updates a CRLF file with a CRLF diff', start: crlfFile, patch: crlf('diff --git a/f b/f\nindex 1234567..abcdef0 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n'), git: { f: 'A\r\nb\r\n' } },
+    { name: 'rejects a CRLF "+++" name git cannot read', start: {}, patch: crlf('diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ f\n@@ -0,0 +1 @@\n+x\n'), git: 'error' },
+    { name: 'ends a "+++" name at a CR inside the line', start: {}, patch: 'diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\rjunk\n@@ -0,0 +1 @@\n+x\n', git: { f: 'x\n' } },
+    { name: 'ends rename names at a CR inside the line, and decodes a quoted name before a CR', start: empty, patch: 'diff --git a/f b/g\nrename from f\rx\nrename to "g"\r\n', git: { g: '' } },
+    { name: 'ends a bare "---"/"+++" name at a CR inside the line', start: { f: 'a\n' }, patch: '--- a/f\rx\n+++ b/f\ry\n@@ -1 +1 @@\n-a\n+A\n', git: { f: 'A\n' } },
+    { name: 'rejects a line holding only a CR inside a hunk', start: { f: 'a\r\n\r\nb\r\n' }, patch: crlf('--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n-a\n+A\n') + '\r\n' + crlf(' b\n'), git: 'error' },
+    { name: 'rejects a vertical tab after the digits of a mode', start: { f: 'a\n' }, patch: 'diff --git a/f b/f\nold mode 100644\v\nnew mode 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+A\n', git: 'error' },
+    { name: 'takes the default name after any first path component', start: {}, patch: 'diff --git x/f y/f\nnew file mode 100644\n', git: { f: '' } },
+    { name: 'splits a "diff --git" line at a TAB', start: {}, patch: 'diff --git a/f\tb/f\nnew file mode 100644\n', git: { f: '' } },
+    { name: 'rejects a quoted first name with an unquoted second name, as git finds no default name', start: {}, patch: 'diff --git "a/f" b/f\nnew file mode 100644\n', git: 'error' },
+  ]
+
+  it.each(cases)('$name', ({ start, patch, git: expected }) => {
+    expect(ours(patch, start)).toEqual(expected)
+  })
+
+  it.runIf(hasGit).each(cases)('git apply agrees: $name', ({ start, patch, git: expected }) => {
+    expect(real(patch, start)).toEqual(expected)
+  })
+
+  /** CRs on every line, on header lines only, or on the `diff --git` line only, of the patches above. */
+  const variants = [
+    ...[...cases.map(c => c.patch), ...modeCases.map(c => c.patch), 'diff --git a/f b/g\nrename from f\nrename to g\n', 'diff --git a/f b/f\ndeleted file mode 100644\n--- a/f\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n', 'diff --git a/f b/f\nold mode 100644\nnew mode 100644\n']
+      .map(patch => patch.replaceAll('\r', ''))
+      .flatMap(patch => [
+        crlf(patch),
+        patch.split('\n').map(line => /^(?:diff --git |--- |\+\+\+ |rename |new file|deleted file|old mode|new mode|index |similarity)/.test(line) ? `${line}\r` : line).join('\n'),
+        patch.replace(/^(diff --git [^\n]*)/m, '$1\r'),
+      ]),
+  ]
+  const starts = [{ f: before }, { f: 'a\r\nb\r\n' }, { f: '' }, {}]
+
+  it.runIf(hasGit)('never applies a patch with CRs where git refuses it or differently from git', () => {
+    let applied = 0
+    for (const patch of new Set(variants)) {
+      for (const start of starts) {
+        const actual = ours(patch, start)
+        if (actual === 'error') continue
+        applied += 1
+        expect({ patch, start, files: actual }).toEqual({ patch, start, files: real(patch, start) })
+      }
+    }
+    expect(applied).toBeGreaterThan(20)
+  }, 60_000)
+})

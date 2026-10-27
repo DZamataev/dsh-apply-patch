@@ -5,7 +5,13 @@
  * or new lines, every ` `, `-` or `+` line is payload, also one that looks like
  * a `---`/`+++` file header, and a blank line is an empty context line.
  * `\ No newline at end of file` may follow any hunk line and removes the LF of
- * that line only, as in git. A CR before the LF belongs to the line, as in git.
+ * that line only, as in git. A CR before the LF belongs to the line, as in git:
+ * to a hunk line's text, so a line holding only a CR is not a hunk line; to
+ * the second name of a `diff --git` line, so a CRLF `diff --git a/f b/f` line
+ * names no file by itself (`apply.c` `git_header_name`); and it ends a
+ * `---`/`+++` or rename name, as `find_name` reads them. In a `diff --git`
+ * section `---`/`+++` names lose their first path component and rename names
+ * none, as git reads them with `-p1`.
  * File headers are recognized only between hunks. Git header lines (`index`,
  * modes, `new file mode`, `deleted file mode`, renames, `---`/`+++`) are read
  * only right after a `diff --git` line, up to the first line that is not one,
@@ -28,12 +34,12 @@
  * silently dropped:
  *
  * - text before the first header and between files (prose, a ```diff fence, `Index:` lines) is skipped;
- * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
+ * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines (also lines holding only a CR) are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
  * - an unprefixed line inside a counted hunk, and a `-` or `+` line right after a hunk whose counts are reached, are rejected with their line number;
  * - a line starting with `\` is a newline marker only as git reads one ({@link isMarker}); inside a hunk any other such line is rejected, after a hunk it is skipped like other text there;
  * - `@@ @@` and `@@` without line numbers are accepted; such a hunk ends at the first line that is not ` `, `-`, `+` or `\`, or at a `---`/`+++` pair;
  * - the last line of the text may lack its LF (git rejects such a diff as corrupt);
- * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it) or at the end of the line; spaces around it are part of the path. Quoted C-style paths are decoded. A CR at the end of a header line is dropped.
+ * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it), a CR or the end of the line; spaces around it are part of the path. Quoted C-style paths are decoded as git `unquote_c_style` decodes them; text after the closing quote is ignored.
  *
  * In a `diff --git` section the file moves when its old and new names differ
  * (`rename from`/`rename to`, or differing `---`/`+++` names), as with git;
@@ -82,7 +88,7 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
   let stray: number | undefined
   let i = 0
   while (i < lines.length) {
-    const line = withoutCr(lines[i])
+    const line = lines[i]
     if (line.startsWith('diff --git ')) {
       const header = parseGitHeader(lines, i)
       stray = undefined
@@ -107,9 +113,9 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
       continue
     }
     if (isFileHeader(lines, i)) {
-      current = { start: i + 1, git: false, oldPath: headerPath(line.slice(4)), newPath: headerPath(withoutCr(lines[i + 1]).slice(4)), newFile: false, deletedFile: false, chunks: [] }
+      current = { start: i + 1, git: false, oldPath: headerPath(line.slice(4)), newPath: headerPath(lines[i + 1].slice(4)), newFile: false, deletedFile: false, chunks: [] }
       sections.push(current)
-      stray = i + 2 < lines.length && HUNK.test(withoutCr(lines[i + 2])) ? undefined : i + 3
+      stray = i + 2 < lines.length && HUNK.test(lines[i + 2]) ? undefined : i + 3
       i += 2
       continue
     }
@@ -145,8 +151,7 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
  * old mode that is not a regular file.
  */
 function parseGitHeader(lines: readonly string[], at: number): { section: Section; next: number; metadata: boolean } {
-  const paths = splitGitPaths(withoutCr(lines[at]).slice('diff --git '.length))
-  const defaultName = paths !== undefined && paths[0] === paths[1] ? paths[0] : undefined
+  const defaultName = gitHeaderName(lines[at].slice('diff --git '.length))
   let oldName: string | undefined
   let newName: string | undefined
   let isNew = false
@@ -161,7 +166,7 @@ function parseGitHeader(lines: readonly string[], at: number): { section: Sectio
   let extensionLine: number | undefined
   let j = at + 1
   for (; j < lines.length; j += 1) {
-    const line = withoutCr(lines[j])
+    const line = lines[j]
     const lineNo = j + 1
     const after = (prefix: string): string | undefined => line.startsWith(prefix) ? line.slice(prefix.length) : undefined
     let rest: string | undefined
@@ -173,8 +178,8 @@ function parseGitHeader(lines: readonly string[], at: number): { section: Sectio
     else if ((rest = after('deleted file mode ')) !== undefined) { isDelete = true; oldName = defaultName; oldMode = parseMode(lineNo, rest); oldModeLine = lineNo }
     else if ((rest = after('new file mode ')) !== undefined) { isNew = true; newName = defaultName; newMode = parseMode(lineNo, rest); newModeLine = lineNo }
     else if (line.startsWith('copy from ') || line.startsWith('copy to ')) throw parseError(lineNo, 'git copy headers are not supported; write the new file with "+" lines instead')
-    else if ((rest = after('rename old ') ?? after('rename from ')) !== undefined) { isRename = true; oldName = unquote(rest) }
-    else if ((rest = after('rename new ') ?? after('rename to ')) !== undefined) { isRename = true; newName = unquote(rest) }
+    else if ((rest = after('rename old ') ?? after('rename from ')) !== undefined) { isRename = true; oldName = findName(rest, 0, TERM_NONE) ?? undefined }
+    else if ((rest = after('rename new ') ?? after('rename to ')) !== undefined) { isRename = true; newName = findName(rest, 0, TERM_NONE) ?? undefined }
     else if (line.startsWith('similarity index ') || line.startsWith('dissimilarity index ')) { /* a score; git ignores a bad one */ }
     else if ((rest = after('index ')) !== undefined) { const mode = indexMode(rest); if (mode !== undefined) { oldMode = parseMode(lineNo, mode); oldModeLine = lineNo } }
     else break
@@ -213,26 +218,27 @@ function unsupported(lineNo: number, why: string): PatchError {
  * @returns the name of this side, `undefined` for `/dev/null`.
  */
 function verifyName(lineNo: number, raw: string, absent: boolean, known: string | undefined, side: 'old' | 'new'): string | undefined {
-  const name = headerPath(raw)
   const header = side === 'old' ? '---' : '+++'
   const kind = side === 'old' ? 'new file mode' : 'deleted file mode'
   if (known === undefined && !absent) {
-    if (name === null) throw parseError(lineNo, `"${header} /dev/null" in a "diff --git" section needs a "${kind} 100644" line before it; without it git apply reads the file "dev/null"`)
-    return name
+    if (isDevNull(raw)) throw parseError(lineNo, `"${header} /dev/null" in a "diff --git" section needs a "${kind} 100644" line before it; without it git apply reads the file "dev/null"`)
+    // A name git cannot find (no "/" to remove) leaves this side unnamed, as in git.
+    return findName(raw, 1, TERM_TAB) ?? undefined
   }
   if (known !== undefined) {
     if (absent) throw parseError(lineNo, `expected "${header} /dev/null" after "${kind}", got "${known}"`)
-    if (name !== known) throw parseError(lineNo, `inconsistent ${side} file name: "${header}" names "${name ?? '/dev/null'}", but an earlier line of this "diff --git" section names "${known}"`)
+    const name = findName(raw, 1, TERM_TAB)
+    if (name !== known) throw parseError(lineNo, `inconsistent ${side} file name: "${header}" names ${name === null ? `no file git can read (${JSON.stringify(raw)})` : JSON.stringify(name)}, but an earlier line of this "diff --git" section names "${known}"`)
     return known
   }
-  if (name !== null) throw parseError(lineNo, `expected "${header} /dev/null" after "${kind}"`)
+  if (!isDevNull(raw)) throw parseError(lineNo, `expected "${header} /dev/null" after "${kind}"`)
   return undefined
 }
 
 /**
  * A git mode as `apply.c` `parse_mode_line` reads it with `strtoul(line, &end, 8)`
  * into an `unsigned int`: optional leading whitespace, an optional sign, octal
- * digits, then whitespace or the end of the line. A value beyond 64 bits
+ * digits, then a space, TAB, CR (git's `isspace`) or the end of the line. A value beyond 64 bits
  * saturates, a negative one wraps around, and the low 32 bits are kept. The
  * result is canonicalized as git `canon_mode` does (a regular file is `100755`
  * with the owner execute bit, otherwise `100644`; a symbolic link `120000`; a
@@ -241,7 +247,7 @@ function verifyName(lineNo: number, raw: string, absent: boolean, known: string 
  * `PATCH_UNSUPPORTED` for a negative mode, which git wraps around to another mode.
  */
 function parseMode(lineNo: number, text: string): number {
-  const match = /^[\t\v\f\r ]*([+-]?)([0-7]+)(?:[\t\v\f\r ]|$)/.exec(text)
+  const match = /^[\t\v\f\r ]*([+-]?)([0-7]+)(?:[\t\r ]|$)/.exec(text)
   if (match === null) throw parseError(lineNo, `invalid mode "${text}"; a git mode is an octal number such as 100644`)
   const ulongMax = (1n << 64n) - 1n
   let value = BigInt(`0o${match[2]}`)
@@ -276,6 +282,53 @@ function withoutCr(line: string): string {
   return line.endsWith('\r') ? line.slice(0, -1) : line
 }
 
+/** Characters that end an unquoted `---`/`+++` name (`apply.c` `TERM_TAB`: a TAB and git's other non-space whitespace). */
+const TERM_TAB = '\t\r'
+/** Characters that end an unquoted `rename from`/`rename to` name. */
+const TERM_NONE = '\r'
+
+/**
+ * A name as `apply.c` `find_name` reads it without a default name: a C-quoted
+ * name that `unquote_c_style` accepts is decoded and the rest of the line is
+ * ignored; otherwise the name runs up to the first terminator (a CR always
+ * ends it, so a CRLF line yields the name without its CR). `p` leading path
+ * components are removed; runs of `/` are squashed.
+ * @param line - the line after its prefix (`--- `, `rename from `), without its LF.
+ * @param p - leading components to remove: 1 for `---`/`+++`, 0 for rename lines.
+ * @param terminators - characters besides the LF that end an unquoted name.
+ * @returns the name, or `null` where git finds none (fewer than `p` slashes, or nothing after them).
+ */
+function findName(line: string, p: number, terminators: string): string | null {
+  if (line.startsWith('"')) {
+    const quoted = unquoteC(line, 0)
+    if (quoted !== undefined) {
+      let name: string | null = quoted.value
+      for (let left = p; left > 0 && name !== null; left -= 1) {
+        const slash = name.indexOf('/')
+        name = slash < 0 ? null : name.slice(slash + 1)
+      }
+      if (name !== null) return squashSlash(name)
+    }
+  }
+  let start = p === 0 ? 0 : -1
+  let left = p
+  let i = 0
+  for (; i < line.length && !terminators.includes(line[i]); i += 1) {
+    if (line[i] === '/' && (left -= 1) === 0) start = i + 1
+  }
+  if (start < 0 || i === start) return null
+  return squashSlash(line.slice(start, i))
+}
+
+function squashSlash(name: string): string {
+  return name.replace(/\/{2,}/g, '/')
+}
+
+/** git `is_dev_null`: `/dev/null` followed by whitespace or the end of the line. */
+function isDevNull(rest: string): boolean {
+  return rest.startsWith('/dev/null') && (rest.length === 9 || ' \t\r'.includes(rest[9]))
+}
+
 /** A `--- ` line directly followed by a `+++ ` line. */
 function isFileHeader(lines: readonly string[], i: number): boolean {
   return lines[i].startsWith('--- ') && lines[i + 1]?.startsWith('+++ ') === true
@@ -296,6 +349,10 @@ function parseHunk(lines: string[], at: number, header: RegExpExecArray): { chun
   const declared = `"${header[0]}" at line ${at + 1}`
   let last: '-' | '+' | ' ' | undefined
   let blankTail = 0
+  /** Line index of the first of the trailing blank lines. */
+  let blankTailStart = 0
+  /** Line indices of lines holding only a CR; git rejects them inside a hunk, they are kept only as trailing separators of a hunk that ends early. */
+  const crOnly: number[] = []
   let swallowedHeader = false
   let i = at + 1
   for (; i < lines.length; i += 1) {
@@ -327,15 +384,18 @@ function parseHunk(lines: string[], at: number, header: RegExpExecArray): { chun
       if (kind !== '+') { chunk.oldLines.push(body); oldLeft -= 1 }
       if (kind !== '-') { chunk.newLines.push(body); newLeft -= 1 }
       last = kind
+      if (blank && blankTail === 0) blankTailStart = i
       blankTail = blank ? blankTail + 1 : 0
+      if (line === '\r') crOnly.push(i)
       continue
     }
-    if (!counted || HUNK.test(withoutCr(line)) || line.startsWith('diff --git ')) break
+    if (!counted || HUNK.test(line) || line.startsWith('diff --git ')) break
     throw parseError(i + 1, `${JSON.stringify(line.slice(0, 60))} is not a hunk line, but the hunk ${declared} still expects ${oldLeft} old and ${newLeft} new line(s). Start every hunk line with " ", "-" or "+", and make the "@@" counts match the lines.`)
   }
   if (counted && (oldLeft > 0 || newLeft > 0)) {
     if (swallowedHeader) throw parseError(at + 1, `the counts of the hunk ${declared} do not match its lines, and its lines contain a "---"/"+++" pair that may be the next file's header; make the "@@" counts match the lines`)
     // A hunk that ends early: its trailing blank lines are separators.
+    if (blankTail > 0) crOnly.length -= crOnly.filter(index => index >= blankTailStart).length
     chunk.oldLines.length -= blankTail
     chunk.newLines.length -= blankTail
     chunk.context.length -= blankTail
@@ -346,6 +406,7 @@ function parseHunk(lines: string[], at: number, header: RegExpExecArray): { chun
   } else if (counted && i < lines.length && /^[-+]/.test(lines[i]) && !isFileHeader(lines, i)) {
     throw parseError(i + 1, `more change lines follow the hunk ${declared} than its header declares; make the "@@" counts match the lines`)
   }
+  if (crOnly.length > 0) throw parseError(crOnly[0] + 1, 'a line holding only a CR is not a hunk line (git apply: "corrupt patch"); an empty context line of a CRLF file is a space followed by the CR')
   if (chunk.oldLines.length === 0 && chunk.newLines.length === 0) throw parseError(at + 1, 'the hunk has no lines')
   return { chunk, next: i }
 }
@@ -404,71 +465,128 @@ function requirePath(path: string | null | undefined, section: Section): string 
   return path
 }
 
-/** Path of a `---`/`+++` header: the text up to a TAB, decoded when quoted, without `a/`/`b/`. */
+/**
+ * Name of a bare `---`/`+++` header: `null` for `/dev/null` (followed by
+ * whitespace or the end of the line, as git `is_dev_null` reads it), else the
+ * name as {@link findName} reads it without removing a component (decoded
+ * when C-quoted, else up to a TAB or CR), then without `a/`/`b/`.
+ */
 function headerPath(raw: string): string | null {
-  const token = raw.startsWith('"') ? unquote(raw.slice(0, closingQuote(raw) + 1)) : raw.split('\t')[0]
-  if (token === '/dev/null') return null
-  return stripPrefix(token)
+  if (isDevNull(raw)) return null
+  return stripPrefix(findName(raw, 0, TERM_TAB) ?? '')
 }
 
 function stripPrefix(path: string): string {
   return path.startsWith('a/') || path.startsWith('b/') ? path.slice(2) : path
 }
 
-/**
- * Split the names of a `diff --git` line into the two prefix-stripped paths.
- * Quoted names end at their closing quote. Two unquoted names are split at the
- * space where both sides name the same path, as git does; otherwise at the
- * first ` b/`.
- */
-function splitGitPaths(rest: string): [string, string] | undefined {
-  if (rest.startsWith('"')) {
-    const close = closingQuote(rest)
-    if (close < 0 || rest[close + 1] !== ' ') return undefined
-    return [stripPrefix(unquote(rest.slice(0, close + 1))), stripPrefix(unquote(rest.slice(close + 2)))]
-  }
-  for (let at = rest.indexOf(' '); at >= 0; at = rest.indexOf(' ', at + 1)) {
-    const first = stripPrefix(rest.slice(0, at))
-    const second = rest.slice(at + 1)
-    if (!second.startsWith('"') && first === stripPrefix(second)) return [first, first]
-  }
-  const half = rest.indexOf(' b/')
-  if (half < 0) return undefined
-  return [stripPrefix(rest.slice(0, half)), stripPrefix(unquote(rest.slice(half + 1)))]
+/** git `isspace`: space, TAB, LF and CR only. */
+function isGitSpace(ch: string | undefined): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r'
 }
 
-function closingQuote(text: string): number {
-  for (let i = 1; i < text.length; i += 1) {
-    if (text[i] === '\\') { i += 1; continue }
-    if (text[i] === '"') return i
-  }
-  return -1
+/** git `skip_tree_prefix` with one component: the text after the first `/`, or `undefined` when there is none or it comes first. */
+function skipTreePrefix(text: string): number | undefined {
+  const slash = text.indexOf('/')
+  return slash <= 0 ? undefined : slash + 1
 }
 
 /**
- * Decode a git C-style quoted path, including octal UTF-8 escapes, by code point.
- * @param text - a whole quoted path (`"…"`), or an unquoted path.
- * @returns the decoded path; unquoted text is returned unchanged, spaces included.
+ * The default name of a `diff --git` line, as `apply.c` `git_header_name`
+ * finds it: the name both sides give after their first path component, or
+ * `undefined` when git finds none (then only `---`/`+++` or rename lines name
+ * the file). Two unquoted names must be the same bytes up to the LF, separated
+ * by one space or TAB; a CR before the LF belongs to the second name, so a
+ * CRLF line `diff --git a/f b/f` names `f` and `f\r` and has no default name,
+ * as for git. A quoted name ends at its closing quote.
+ * @param rest - the line after `diff --git `, without its LF.
  */
-export function unquote(text: string): string {
-  if (!(text.length >= 2 && text.startsWith('"') && text.endsWith('"'))) return text
+function gitHeaderName(rest: string): string | undefined {
+  const line = `${rest}\n`
+  if (line.startsWith('"')) {
+    const first = unquoteC(line, 0)
+    if (first === undefined) return undefined
+    const cut = skipTreePrefix(first.value)
+    if (cut === undefined) return undefined
+    const name = first.value.slice(cut)
+    let second = first.end
+    while (second < line.length && isGitSpace(line[second])) second += 1
+    if (second >= line.length) return undefined
+    if (line[second] === '"') {
+      const other = unquoteC(line, second)
+      const otherCut = other === undefined ? undefined : skipTreePrefix(other.value)
+      return other !== undefined && otherCut !== undefined && other.value.slice(otherCut) === name ? name : undefined
+    }
+    // git compares the unquoted second name including its LF, so this only matches a first name that ends in an escaped LF.
+    const tail = line.slice(second)
+    const tailCut = skipTreePrefix(tail)
+    return tailCut !== undefined && tail.slice(tailCut) === name ? name : undefined
+  }
+  const nameCut = skipTreePrefix(line.slice(0, -1))
+  if (nameCut === undefined) return undefined
+  const quote = line.indexOf('"', nameCut)
+  if (quote >= 0) {
+    // A quote after an unquoted first name starts the second name.
+    const other = unquoteC(line, quote)
+    const otherCut = other === undefined ? undefined : skipTreePrefix(other.value)
+    if (other === undefined || otherCut === undefined) return undefined
+    const name = other.value.slice(otherCut)
+    return name.length < quote - nameCut && line.startsWith(name, nameCut) && isGitSpace(line[nameCut + name.length]) ? name : undefined
+  }
+  const end = line.length - 1
+  for (let len = 0; nameCut + len < end; len += 1) {
+    const ch = line[nameCut + len]
+    if (ch !== ' ' && ch !== '\t') continue
+    const secondStart = nameCut + len + 1
+    const secondCut = skipTreePrefix(line.slice(secondStart, end))
+    if (secondCut === undefined) continue
+    const second = secondStart + secondCut
+    if (line[second + len] === '\n' && line.slice(second, second + len) === line.slice(nameCut, nameCut + len)) return line.slice(nameCut, nameCut + len)
+  }
+  return undefined
+}
+
+/**
+ * Decode a C-quoted name as git `unquote_c_style` does: `\a \b \f \n \r \t \v \\ \"`
+ * and three-digit octal escapes up to `\377`, decoded as UTF-8; any other
+ * escape, or a missing closing quote, fails.
+ * @param text - the text holding the name.
+ * @param at - index of the opening quote.
+ * @returns the decoded name and the index after the closing quote, or `undefined`.
+ */
+function unquoteC(text: string, at: number): { value: string; end: number } | undefined {
+  if (text[at] !== '"') return undefined
+  const simple: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '\\': 92, '"': 34 }
   const bytes: number[] = []
-  const simple: Record<string, number> = { n: 10, t: 9, r: 13, '"': 34, '\\': 92, a: 7, b: 8, f: 12, v: 11 }
-  const chars = Array.from(text.slice(1, -1))
-  for (let i = 0; i < chars.length; i += 1) {
-    const ch = chars[i]
-    if (ch !== '\\') { bytes.push(...Buffer.from(ch, 'utf8')); continue }
-    const octal = /^[0-7]{1,3}/.exec(chars.slice(i + 1, i + 4).join(''))?.[0]
-    const next = chars[i + 1]
-    if (octal !== undefined) {
-      bytes.push(parseInt(octal, 8))
-      i += octal.length
-    } else if (next !== undefined && next in simple) {
+  for (let i = at + 1; i < text.length;) {
+    const ch = text[i]
+    if (ch === '"') return { value: Buffer.from(bytes).toString('utf8'), end: i + 1 }
+    if (ch !== '\\') {
+      const point = String.fromCodePoint(text.codePointAt(i)!)
+      bytes.push(...Buffer.from(point, 'utf8'))
+      i += point.length
+      continue
+    }
+    const next = text[i + 1]
+    if (next !== undefined && next in simple) {
       bytes.push(simple[next])
-      i += 1
+      i += 2
+    } else if (/^[0-3][0-7][0-7]$/.test(text.slice(i + 1, i + 4))) {
+      bytes.push(parseInt(text.slice(i + 1, i + 4), 8))
+      i += 4
     } else {
-      bytes.push(92)
+      return undefined
     }
   }
-  return Buffer.from(bytes).toString('utf8')
+  return undefined
+}
+
+/**
+ * Decode a git C-quoted path as `unquote_c_style` does, including octal UTF-8 escapes.
+ * @param text - a whole quoted path (`"…"`), or an unquoted path.
+ * @returns the decoded path; text that is not one valid quoted name is returned unchanged, spaces included.
+ */
+export function unquote(text: string): string {
+  const quoted = unquoteC(text, 0)
+  return quoted !== undefined && quoted.end === text.length ? quoted.value : text
 }

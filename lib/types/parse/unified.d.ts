@@ -5,7 +5,13 @@
  * or new lines, every ` `, `-` or `+` line is payload, also one that looks like
  * a `---`/`+++` file header, and a blank line is an empty context line.
  * `\ No newline at end of file` may follow any hunk line and removes the LF of
- * that line only, as in git. A CR before the LF belongs to the line, as in git.
+ * that line only, as in git. A CR before the LF belongs to the line, as in git:
+ * to a hunk line's text, so a line holding only a CR is not a hunk line; to
+ * the second name of a `diff --git` line, so a CRLF `diff --git a/f b/f` line
+ * names no file by itself (`apply.c` `git_header_name`); and it ends a
+ * `---`/`+++` or rename name, as `find_name` reads them. In a `diff --git`
+ * section `---`/`+++` names lose their first path component and rename names
+ * none, as git reads them with `-p1`.
  * File headers are recognized only between hunks. Git header lines (`index`,
  * modes, `new file mode`, `deleted file mode`, renames, `---`/`+++`) are read
  * only right after a `diff --git` line, up to the first line that is not one,
@@ -28,12 +34,12 @@
  * silently dropped:
  *
  * - text before the first header and between files (prose, a ```diff fence, `Index:` lines) is skipped;
- * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
+ * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines (also lines holding only a CR) are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
  * - an unprefixed line inside a counted hunk, and a `-` or `+` line right after a hunk whose counts are reached, are rejected with their line number;
  * - a line starting with `\` is a newline marker only as git reads one ({@link isMarker}); inside a hunk any other such line is rejected, after a hunk it is skipped like other text there;
  * - `@@ @@` and `@@` without line numbers are accepted; such a hunk ends at the first line that is not ` `, `-`, `+` or `\`, or at a `---`/`+++` pair;
  * - the last line of the text may lack its LF (git rejects such a diff as corrupt);
- * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it) or at the end of the line; spaces around it are part of the path. Quoted C-style paths are decoded. A CR at the end of a header line is dropped.
+ * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it), a CR or the end of the line; spaces around it are part of the path. Quoted C-style paths are decoded as git `unquote_c_style` decodes them; text after the closing quote is ignored.
  *
  * In a `diff --git` section the file moves when its old and new names differ
  * (`rename from`/`rename to`, or differing `---`/`+++` names), as with git;
@@ -57,8 +63,8 @@ import type { ParsedPatch } from './types.js';
  */
 export declare function parseUnifiedDiff(text: string): ParsedPatch;
 /**
- * Decode a git C-style quoted path, including octal UTF-8 escapes, by code point.
+ * Decode a git C-quoted path as `unquote_c_style` does, including octal UTF-8 escapes.
  * @param text - a whole quoted path (`"…"`), or an unquoted path.
- * @returns the decoded path; unquoted text is returned unchanged, spaces included.
+ * @returns the decoded path; text that is not one valid quoted name is returned unchanged, spaces included.
  */
 export declare function unquote(text: string): string;
