@@ -42,7 +42,7 @@
  * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines (also lines holding only a CR) are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
  * - an unprefixed line inside a counted hunk, and a `-` or `+` line right after a hunk whose counts are reached, are rejected with their line number;
  * - a line starting with `\` is a newline marker only as git reads one ({@link isMarker}); inside a hunk any other such line is rejected, after a hunk it is skipped like other text there;
- * - `@@ @@` and `@@` without line numbers are accepted; such a hunk ends at the first line that is not ` `, `-`, `+` or `\`, or at a `---`/`+++` pair;
+ * - `@@ @@` headers without line numbers are accepted where git rejects the whole patch: git skips such a hunk as text, so a patch that also has a numbered hunk or a new file, deletion or rename section (which git would apply) is rejected. Such a hunk ends at the first line that is not ` `, `-`, `+` or `\`, or at a `---`/`+++` pair;
  * - the last line of the text may lack its LF (git rejects such a diff as corrupt);
  * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it), a CR or the end of the line; spaces around it are part of the path, except before a timestamp ending a bare `---`/`+++` line. Quoted C-style paths are decoded as git `unquote_c_style` decodes them; text after the closing quote is ignored.
  *
@@ -104,6 +104,10 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
   let stray: number | undefined
   /** Line of the bare pair from whose names git guessed `-p0` (`guess_p_value`); git reads every later section with it. */
   let guessedAt: number | undefined
+  /** Line of the first `@@ @@` hunk without line numbers, which git skips as text. */
+  let unnumberedAt: number | undefined
+  /** Line of the first numbered hunk or new file, deletion or rename `diff --git` section: something git reads. */
+  let gitReadsAt: number | undefined
   let i = 0
   while (i < lines.length) {
     const line = lines[i]
@@ -122,6 +126,8 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
         continue
       }
       sections.push(current = header.section)
+      // git applies a new file, deletion or rename even where its hunks are unnumbered and skipped.
+      if (header.metadata) gitReadsAt ??= header.section.start
       i = header.next
       if (next !== undefined && HUNK.test(next)) continue
       if (!header.metadata) {
@@ -152,6 +158,8 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
       if (stray !== undefined) throw parseError(stray, 'text between the "+++" header and the first "@@" hunk header; git apply rejects it. Put the "@@" line right after the "+++" line')
       if (current === undefined) throw parseError(i + 1, 'the "@@" hunk has no file header; put "--- a/<path>" and "+++ b/<path>" lines (or "diff --git" header lines) right before it')
       const parsed = parseHunk(lines, i, hunk)
+      if (hunk[1] === undefined) unnumberedAt ??= i + 1
+      else gitReadsAt ??= i + 1
       current.chunks.push(parsed.chunk)
       i = parsed.next
       continue
@@ -160,6 +168,9 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
     i += 1
   }
 
+  if (unnumberedAt !== undefined && gitReadsAt !== undefined) {
+    throw parseError(unnumberedAt, `the "@@" hunk header has no line numbers, and git apply skips such a hunk as text and reads the rest of this patch (from line ${gitReadsAt}) without it. Add line numbers to every "@@" header ("@@ -<old start>,<count> +<new start>,<count> @@"), or use the Codex format`)
+  }
   const ops = sections.map(toOp).filter((op): op is PatchOp => op !== null)
   if (ops.length === 0) throw parseError(0, 'the diff contains no file changes')
   return { format: 'unified', ops }

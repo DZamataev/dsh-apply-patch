@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.8 (2026-10-27)
+
+- Unified: an `@@ @@` hunk without line numbers is applied only where `git apply` rejects the whole patch. git does not read it as a hunk and skips it as text, so in a patch that also has a numbered hunk or a new file, deletion or rename `diff --git` section it applied the rest alone while this tool also applied the unnumbered hunk; such a patch is now `PATCH_PARSE`, asking for line numbers in every `@@` header or the Codex format (was: applied).
+- README: the unnumbered-hunk extra and its refusal.
+- Tests: 12 unnumbered-hunk cases, each checked against the installed `git apply`.
+
 ## 1.1.7 (2026-10-27)
 
 - Unified: names of a bare `---`/`+++` pair are read as `git apply` reads a traditional patch (`apply.c` `parse_traditional_patch`). Each name loses its first path component, whatever it is (was: only `a/` or `b/`, so `--- x/f`/`+++ x/f` patched `x/f` where git patches `f`, and `--- /x/f` patched the absolute path `/x/f` where git patches `x/f`); from names without a directory git guesses `-p0` (`guess_p_value`), so `--- f`/`+++ f` still patches `f`; a timestamp at the end of the line is not part of the name (`diff_timestamp_len`; was: `--- a/f 2010-07-05 19:41:17` named `f 2010-07-05 19:41:17`); of two differing names the `---` one is patched when it is a shorter prefix of the `+++` one (was: `--- a/f`/`+++ b/f.orig` patched `f.orig` where git patches `f`); an epoch timestamp after a TAB creates or deletes the file (`has_epoch_timestamp`; was: an update, so a new-file hunk with an epoch `---` timestamp was inserted into an existing file where git refuses). A pair where git finds no name (`--- f`/`+++ /dev/null`) or with `/dev/null` on both sides (git creates `dev/null`) is `PATCH_PARSE`.

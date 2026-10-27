@@ -15,8 +15,10 @@ describe('parseUnifiedDiff', () => {
   })
 
   it('tolerates overstated counts, "@@ @@" headers, trailing blank lines and a fence with prose', () => {
-    const parsed = parseUnifiedDiff(['Here is the fix:', '- a bullet, not a change', '```diff', '--- a/x', '+++ b/x', '@@ -1,5 +1,5 @@', ' keep', '-a', '+b', '', '@@ -9 +9 @@', '-e', '+f', '```', 'Then:', '--- y', '+++ y', '@@ @@', '-c', '+d', ''].join('\n'))
-    expect(parsed.ops.map(op => op.kind === 'update' ? [op.path, op.chunks.map(chunk => chunk.oldLines)] : [])).toEqual([['x', [['keep', 'a'], ['e']]], ['y', [['c']]]])
+    const parsed = parseUnifiedDiff(['Here is the fix:', '- a bullet, not a change', '```diff', '--- a/x', '+++ b/x', '@@ -1,5 +1,5 @@', ' keep', '-a', '+b', '', '@@ -9 +9 @@', '-e', '+f', '```', ''].join('\n'))
+    expect(parsed.ops.map(op => op.kind === 'update' ? [op.path, op.chunks.map(chunk => chunk.oldLines)] : [])).toEqual([['x', [['keep', 'a'], ['e']]]])
+    const unnumbered = parseUnifiedDiff(['Then:', '```diff', '--- y', '+++ y', '@@ @@', '-c', '+d', '```', ''].join('\n'))
+    expect(unnumbered.ops.map(op => op.kind === 'update' ? [op.path, op.chunks.map(chunk => chunk.oldLines)] : [])).toEqual([['y', [['c']]]])
     expect(detectFormat('```diff\n--- a/x\n+++ b/x\n')).toBe('unified')
   })
 

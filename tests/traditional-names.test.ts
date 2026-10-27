@@ -155,6 +155,51 @@ const cases: Case[] = [
   { name: 'refuses "/dev/null" on both sides', patch: pair('/dev/null', '/dev/null', add), git: { ...start, 'dev/null': 'x\n' }, refusal: /\/dev\/null/ },
 ]
 
+/**
+ * `@@ @@` hunks without line numbers: git does not read them as hunks and
+ * skips them as text. The tool applies them only where git rejects the whole
+ * patch; next to anything git applies (a numbered hunk, a new file, deletion
+ * or rename section) they are refused, since git would apply the rest alone.
+ */
+interface UnnumberedCase {
+  name: string
+  patch: string
+  git: Outcome
+  /** The tool's result where git rejects the patch (a documented extra); without it the tool refuses. */
+  extra?: Outcome
+}
+
+const unnumbered = '@@ @@\n-a\n+A\n b\n'
+const refusedHint = /no line numbers.*Add line numbers to every "@@" header.*Codex format/
+const unnumberedCases: UnnumberedCase[] = [
+  { name: 'an unnumbered hunk after a numbered one in the same file', patch: pair('a/f', 'b/f') + '@@ @@\n-b\n+B\n', git: updated('f') },
+  { name: 'an unnumbered file after a numbered one', patch: pair('a/f', 'b/f') + pair('a/g', 'b/g', unnumbered), git: updated('f') },
+  { name: 'an unnumbered file before a numbered one', patch: pair('a/g', 'b/g', unnumbered) + pair('a/f', 'b/f'), git: updated('f') },
+  { name: 'an unnumbered file without directories before a numbered one', patch: pair('g', 'g', unnumbered) + pair('x/f', 'x/f'), git: updated('f') },
+  { name: 'an unnumbered hunk before a numbered one in the same file', patch: pair('a/f', 'b/f', unnumbered) + '@@ -2 +2 @@\n-b\n+B\n', git: 'error' },
+  { name: 'an unnumbered file after a new file section', patch: `diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n${add}${pair('a/g', 'b/g', unnumbered)}`, git: { ...start, n: 'x\n' } },
+  { name: 'an unnumbered file after an empty new file section', patch: `diff --git a/n b/n\nnew file mode 100644\n\n${pair('a/g', 'b/g', unnumbered)}`, git: { ...start, n: '' } },
+  { name: 'an unnumbered hunk of a new file section', patch: 'diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ @@\n+x\n', git: { ...start, n: '' } },
+  { name: 'an unnumbered hunk of a rename section', patch: `diff --git a/f b/h\nrename from f\nrename to h\n${unnumbered}`, git: (({ f, ...rest }) => ({ ...rest, h: f }))(start) },
+  { name: 'only unnumbered hunks', patch: pair('a/f', 'b/f', unnumbered), git: 'error', extra: updated('f') },
+  { name: 'only unnumbered files', patch: pair('a/f', 'b/f', unnumbered) + pair('a/g', 'b/g', unnumbered), git: 'error', extra: { ...updated('f'), g: 'A\nb\n' } },
+  { name: 'only unnumbered hunks in a "diff --git" section', patch: `diff --git a/f b/f\n--- a/f\n+++ b/f\n${unnumbered}`, git: 'error', extra: updated('f') },
+]
+
+describe('unnumbered "@@ @@" hunks', () => {
+  it.each(unnumberedCases)('$name', ({ patch, extra }) => {
+    if (extra !== undefined) expect(ours(patch)).toEqual(extra)
+    else {
+      expect(ours(patch)).toBe('error')
+      expect(parseMessage(patch)).toMatch(refusedHint)
+    }
+  })
+
+  it.runIf(hasGit).each(unnumberedCases)('git apply agrees: $name', ({ patch, git: expected }) => {
+    expect(real(patch)).toEqual(expected)
+  })
+})
+
 describe('names of bare "---"/"+++" pairs', () => {
   it.each(cases)('$name', ({ patch, files, git: expected, refusal }) => {
     if (refusal === undefined) expect(ours(patch, files)).toEqual(expected)
@@ -172,10 +217,6 @@ describe('names of bare "---"/"+++" pairs', () => {
     expect(ours('--- x/f\n+++ x/f\n@@ @@\n-a\n+A\n')).toEqual(updated('f'))
     expect(ours('--- f\n+++ f\n@@ @@\n-a\n+A\n')).toEqual(updated('f'))
     expect(ours('--- a/f 2010-07-05 19:41:17\n+++ b/f 2010-07-05 19:41:18\n@@ @@\n-a\n+A\n')).toEqual(updated('f'))
-  })
-
-  it('reads a later numbered pair with -p1 after an unnumbered pair without directories', () => {
-    expect(ours(`--- g\n+++ g\n@@ @@\n-a\n+A\n${pair('x/f', 'x/f')}`)).toEqual({ ...updated('f'), g: 'A\nb\n' })
   })
 
   it('explains a name git cannot find', () => {

@@ -42,7 +42,7 @@
  * - a hunk may end before its counts are reached at the end of the text, at the next hunk header or at `diff --git`; its trailing unprefixed blank lines (also lines holding only a CR) are then separators. Such a hunk is rejected when its body contains a `---`/`+++` pair, which may have been the next file's header;
  * - an unprefixed line inside a counted hunk, and a `-` or `+` line right after a hunk whose counts are reached, are rejected with their line number;
  * - a line starting with `\` is a newline marker only as git reads one ({@link isMarker}); inside a hunk any other such line is rejected, after a hunk it is skipped like other text there;
- * - `@@ @@` and `@@` without line numbers are accepted; such a hunk ends at the first line that is not ` `, `-`, `+` or `\`, or at a `---`/`+++` pair;
+ * - `@@ @@` headers without line numbers are accepted where git rejects the whole patch: git skips such a hunk as text, so a patch that also has a numbered hunk or a new file, deletion or rename section (which git would apply) is rejected. Such a hunk ends at the first line that is not ` `, `-`, `+` or `\`, or at a `---`/`+++` pair;
  * - the last line of the text may lack its LF (git rejects such a diff as corrupt);
  * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it), a CR or the end of the line; spaces around it are part of the path, except before a timestamp ending a bare `---`/`+++` line. Quoted C-style paths are decoded as git `unquote_c_style` decodes them; text after the closing quote is ignored.
  *
