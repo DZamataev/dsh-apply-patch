@@ -20,7 +20,7 @@ afterEach(async () => {
 })
 
 describe('apply_patch on real DSH services', () => {
-  it('updates a read file, adds a file with new parent directories and reports compact diffs', async () => {
+  it('updates a read file, adds a file with new parent directories and reports one display hunk per change', async () => {
     const h = await open()
     const big = Array.from({ length: 400 }, (_, i) => `line ${i}`).join('\n') + '\n'
     writeFileSync(join(h.dir, 'big.txt'), big)
@@ -33,7 +33,8 @@ describe('apply_patch on real DSH services', () => {
     expect(readFileSync(join(h.dir, 'deep/new/dir/n.txt'), 'utf8')).toBe('hello\n')
     expect(result.summary).toBe('Applied patch: 1 added, 1 modified, 0 deleted.')
     expect(result.diffs[0].oldText).toBe('line 197\nline 198\nline 199\nline 200\nline 201\nline 202\nline 203')
-    expect(result.diffs[1]).toEqual({ path: 'deep/new/dir/n.txt', oldText: null, newText: 'hello\n' })
+    expect(result.diffs[0].path).toBe(join(h.dir, 'big.txt'))
+    expect(result.diffs[1]).toEqual({ path: join(h.dir, 'deep/new/dir/n.txt'), oldText: null, newText: 'hello' })
   })
 
   it('refuses an unread file before writing anything, also in a dry run', async () => {

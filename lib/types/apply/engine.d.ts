@@ -59,7 +59,10 @@ import type { ResolvedConfig } from '../config.js';
 import type { ParsedPatch } from '../parse/types.js';
 /** One file in the result. */
 export interface FileChange {
+    /** The path as written in the patch (the destination of a moved file). */
     path: string;
+    /** The resolved absolute path in the file system's execution world (`ctx.fs.processPath`). */
+    absolutePath: string;
     action: 'added' | 'modified' | 'deleted';
     /** Original path of a moved file. */
     from?: string;

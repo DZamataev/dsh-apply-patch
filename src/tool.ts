@@ -10,7 +10,7 @@ import { commitPatch, preparePatch } from './apply/engine.js'
 import type { FileChange } from './apply/engine.js'
 import type { ResolvedConfig } from './config.js'
 import { detectFormat } from './detect.js'
-import { compactDiff } from './diff.js'
+import { displayDiffs } from './diff.js'
 import type { DisplayDiff } from './diff.js'
 import { PatchError } from './errors.js'
 import { parseCodexPatch } from './parse/codex.js'
@@ -20,7 +20,9 @@ import { parseUnifiedDiff } from './parse/unified.js'
 export interface ApplyPatchResult {
   applied: boolean
   summary: string
+  /** The files with their paths as written in the patch. */
   files: { path: string; action: 'added' | 'modified' | 'deleted'; from?: string }[]
+  /** Display hunks (see `displayDiffs`) whose `path` is the resolved absolute path, as for the native `write` and `edit`. */
   diffs: DisplayDiff[]
 }
 
@@ -115,7 +117,7 @@ export function buildApplyPatchTool(ctx: Context, cfg: ResolvedConfig): ToolDefi
       const prepared = await preparePatch(ctx, exec, parsed, cfg)
       const applied = args.dry_run !== true
       const notes = applied ? await commitPatch(ctx, exec, prepared) : []
-      return result(prepared.files, applied, cfg.maxDiffBytes, notes)
+      return result(prepared.files, applied, cfg, notes)
     },
     presentCall: (args: { input?: string }) => ({ card: 'generic' as const, title: 'Apply patch', kind: 'other' as const, rawInput: args.input ?? '' }),
     presentResult: (_args, outcome: ToolResult) => {
@@ -126,14 +128,14 @@ export function buildApplyPatchTool(ctx: Context, cfg: ResolvedConfig): ToolDefi
   })
 }
 
-function result(files: readonly FileChange[], applied: boolean, maxDiffBytes: number, notes: readonly string[]): ApplyPatchResult {
+function result(files: readonly FileChange[], applied: boolean, cfg: ResolvedConfig, notes: readonly string[]): ApplyPatchResult {
   const count = (action: FileChange['action']) => files.filter(file => file.action === action).length
   const lead = applied ? 'Applied patch' : 'Dry run, nothing written: the patch applies'
   return {
     applied,
     summary: [`${lead}: ${count('added')} added, ${count('modified')} modified, ${count('deleted')} deleted.`, ...notes.map(note => `Note: ${note}`)].join('\n'),
     files: files.map(file => ({ path: file.path, action: file.action, ...file.from === undefined ? {} : { from: file.from } })),
-    diffs: files.map(file => compactDiff(file.path, file.before, file.after, maxDiffBytes)),
+    diffs: displayDiffs(files.map(file => ({ ...file, path: file.absolutePath })), cfg.maxDiffBytes, cfg.maxDiffTotalBytes),
   }
 }
 

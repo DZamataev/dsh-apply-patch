@@ -68,7 +68,10 @@ import { applyToFile } from './content.js'
 
 /** One file in the result. */
 export interface FileChange {
+  /** The path as written in the patch (the destination of a moved file). */
   path: string
+  /** The resolved absolute path in the file system's execution world (`ctx.fs.processPath`). */
+  absolutePath: string
   action: 'added' | 'modified' | 'deleted'
   /** Original path of a moved file. */
   from?: string
@@ -313,7 +316,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
       if (!await absent(op.path, target)) throw new PatchError('PATCH_CONFLICT', `Cannot add "${op.path}": it already exists. Read it and use "*** Update File:", or delete it first.`)
       await checkWritable(fs, sandboxPolicy, target, op.path, 'add')
       writes.push({ kind: 'write', place, guard: { kind: 'createIfAbsent' }, before: null, after: op.content })
-      files.push({ path: op.path, action: 'added', before: null, after: op.content })
+      files.push({ path: op.path, absolutePath: fs.processPath(target), action: 'added', before: null, after: op.content })
       continue
     }
     const info = await fsCall(() => fs.stat(target, signal), op.path)
@@ -330,7 +333,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
       if (print?.version !== guard.version) throw new PatchError('PATCH_STALE', `"${op.path}" changed while the patch was being checked. Read it again and retry.`)
       await staging.check(target, signal)
       deletes.push({ kind: 'delete', place, version: guard.version, digest: print.digest })
-      files.push({ path: op.path, action: 'deleted', before, after: null })
+      files.push({ path: op.path, absolutePath: fs.processPath(target), action: 'deleted', before, after: null })
       continue
     }
     const before = await fsCall(() => readWhole(fs, target, signal), op.path)
@@ -340,7 +343,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
         await checkWritable(fs, sandboxPolicy, target, op.path, 'update')
         writes.push({ kind: 'write', place, guard, before, after })
       }
-      files.push({ path: op.path, action: 'modified', before, after })
+      files.push({ path: op.path, absolutePath: fs.processPath(target), action: 'modified', before, after })
       continue
     }
     const destination = await resolve(op.moveTo)
@@ -349,7 +352,7 @@ export async function preparePatch(ctx: Context, exec: ToolRunContext, patch: Pa
     }
     await checkWritable(fs, sandboxPolicy, destination, op.moveTo, 'move a file to')
     moves.push({ kind: 'move', source: place, destination: { target: destination, path: op.moveTo }, version: guard.version, before, after: after === before ? null : after })
-    files.push({ path: op.moveTo, from: op.path, action: 'modified', before, after })
+    files.push({ path: op.moveTo, absolutePath: fs.processPath(destination), from: op.path, action: 'modified', before, after })
   }
   return { files, steps: [...writes, ...moves, ...deletes], sandboxPolicy, staging }
 }

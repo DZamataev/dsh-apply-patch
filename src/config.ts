@@ -17,8 +17,10 @@ export interface Config {
   maxFiles?: number
   /** Maximum patch size in UTF-8 bytes. */
   maxPatchBytes?: number
-  /** Maximum UTF-8 bytes of one file's display diff in the result metadata. */
+  /** Maximum UTF-8 bytes (path and texts) of one display diff entry, a hunk, in the result metadata; a larger entry keeps only its path. */
   maxDiffBytes?: number
+  /** Maximum UTF-8 bytes of all display diff entries of one call; later entries keep only their path. */
+  maxDiffTotalBytes?: number
 }
 
 /** Configuration with every default applied. */
@@ -32,6 +34,7 @@ export const Config: z<Config, ResolvedConfig> = z.object({
   maxFiles: z.natural().min(1).default(50),
   maxPatchBytes: z.natural().min(1024).default(512 * 1024),
   maxDiffBytes: z.natural().min(256).default(16 * 1024),
+  maxDiffTotalBytes: z.natural().min(1024).default(128 * 1024),
 })
 
 /**

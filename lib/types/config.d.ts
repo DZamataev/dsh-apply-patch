@@ -15,8 +15,10 @@ export interface Config {
     maxFiles?: number;
     /** Maximum patch size in UTF-8 bytes. */
     maxPatchBytes?: number;
-    /** Maximum UTF-8 bytes of one file's display diff in the result metadata. */
+    /** Maximum UTF-8 bytes (path and texts) of one display diff entry, a hunk, in the result metadata; a larger entry keeps only its path. */
     maxDiffBytes?: number;
+    /** Maximum UTF-8 bytes of all display diff entries of one call; later entries keep only their path. */
+    maxDiffTotalBytes?: number;
 }
 /** Configuration with every default applied. */
 export type ResolvedConfig = Required<Config>;

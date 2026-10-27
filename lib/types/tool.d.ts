@@ -10,11 +10,13 @@ import type { DisplayDiff } from './diff.js';
 export interface ApplyPatchResult {
     applied: boolean;
     summary: string;
+    /** The files with their paths as written in the patch. */
     files: {
         path: string;
         action: 'added' | 'modified' | 'deleted';
         from?: string;
     }[];
+    /** Display hunks (see `displayDiffs`) whose `path` is the resolved absolute path, as for the native `write` and `edit`. */
     diffs: DisplayDiff[];
 }
 /**
