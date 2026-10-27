@@ -153,7 +153,9 @@ const cases: Case[] = [
   { name: 'accepts a name whose first component is removed', patch: pair('a/x/f', 'b/x/f'), git: updated('x/f') },
   // UTF-8 names.
   { name: 'decodes a quoted UTF-8 name', patch: `diff --git "a/caf\\303\\251" "b/caf\\303\\251"\nnew file mode 100644\n`, git: { ...start, 'café': '' } },
-  { name: 'reads distinct quoted names that are not UTF-8 as different names', patch: 'diff --git "a/\\377" "b/\\376"\nnew file mode 100644\n', git: 'error', refusal: /^PATCH_PARSE: .*names two different files/ },
+  { name: 'refuses distinct quoted names that are not UTF-8 on a "diff --git" line', patch: 'diff --git "a/\\377" "b/\\376"\nnew file mode 100644\n', git: 'error', refusal: notUtf8 },
+  { name: 'refuses a name that is not UTF-8 in the first component of a bare pair, which git removes', patch: pair('"a\\377/f"', '"b\\377/f"'), git: updated('f'), refusal: notUtf8 },
+  { name: 'refuses a name that is not UTF-8 in the first component of a "diff --git" section', patch: `diff --git "a\\377/f" "b\\377/f"\n${pair('"a\\377/f"', '"b\\377/f"')}`, git: updated('f'), refusal: notUtf8 },
   { name: 'refuses a new file whose quoted name is not UTF-8', patch: 'diff --git "a/\\377" "b/\\377"\nnew file mode 100644\n', git: 'error', refusal: notUtf8, bytes: true },
   { name: 'refuses a quoted name that is not UTF-8 in a bare pair', patch: pair('/dev/null', '"b/x\\377"', add), git: 'error', refusal: notUtf8, bytes: true },
   { name: 'refuses a truncated UTF-8 sequence in a quoted rename name', patch: 'diff --git a/f b/g\nsimilarity index 100%\nrename from f\nrename to "g\\303"\n', git: 'error', refusal: notUtf8, bytes: true },
@@ -166,6 +168,14 @@ const cases: Case[] = [
   { name: 'refuses a rename to a quoted name holding a NUL byte', patch: 'diff --git a/f "b/g\\000x"\nsimilarity index 100%\nrename from f\nrename to "g\\000x"\n', git: (({ f: _, ...rest }) => ({ ...rest, g: abc }))(start), refusal: nul },
   { name: 'refuses a quoted -p0 pair holding a NUL byte', patch: pair('"f\\000suffix"', '"f\\000suffix"'), git: updated('f'), refusal: nul },
   { name: 'refuses a quoted name starting with a NUL byte', patch: 'diff --git "a/\\000f" "b/\\000f"\nnew file mode 100644\n', git: 'error', refusal: nul },
+  // A NUL byte in the first component: git cuts the name before the "/", reads the pair with -p0 and patches "b"; checked before any component is removed.
+  { name: 'refuses a NUL byte in the first component of a bare pair', patch: pair('"a\\000z/f"', '"b\\000z/f"'), files: { ...start, a: abc, b: abc }, git: { ...start, a: abc, b: 'alpha\nBETA\nomega\n' }, refusal: nul },
+  { name: 'refuses a NUL byte in the first component of a bare pair with timestamps', patch: pair('"a\\000z/f"\t2010-07-05 19:41:17', '"b\\000z/f"\t2010-07-05 19:41:17'), files: { ...start, a: abc, b: abc }, git: { ...start, a: abc, b: 'alpha\nBETA\nomega\n' }, refusal: nul },
+  { name: 'refuses a NUL byte in the first component of a "diff --git" section', patch: `diff --git "a\\000z/f" "b\\000z/f"\n${pair('"a\\000z/f"', '"b\\000z/f"')}`, git: 'error', refusal: nul },
+  { name: 'refuses a NUL byte in the first component of "---"/"+++" names of a "diff --git" section', patch: `diff --git a/f b/f\n${pair('"a\\000z/f"', '"b\\000z/f"')}`, git: 'error', refusal: nul },
+  { name: 'refuses a NUL byte after the first component of a bare pair', patch: pair('"a/f\\000x"', '"b/f\\000x"'), git: updated('f'), refusal: nul },
+  { name: 'refuses a rename from a quoted name holding a NUL byte', patch: 'diff --git a/f b/g\nsimilarity index 100%\nrename from "f\\000x"\nrename to g\n', git: (({ f: _, ...rest }) => ({ ...rest, g: abc }))(start), refusal: nul },
+  { name: 'skips a "diff --git" line with a NUL byte in a name, as git skips it as text', patch: `diff --git "a\\000z/f" "b\\000z/f"\nprose\n${pair('a/f', 'b/f')}`, git: updated('f') },
   { name: 'skips a "diff --git" line with a name that is not UTF-8, as git skips it as text', patch: `diff --git "a/\\377" "b/\\377"\nprose\n${pair('a/f', 'b/f')}`, git: updated('f') },
 ]
 
@@ -188,6 +198,15 @@ describe('file names of unified diffs', () => {
 
   it('refuses an unquoted name with a lone surrogate, which no file name holds', () => {
     expect(failure(pair('/dev/null', 'b/x\uD800', add))).toMatch(notUtf8)
+  })
+
+  it('refuses a lone surrogate in the first component of an unquoted name, which git would remove', () => {
+    expect(failure(pair('a\uD800/f', 'b\uD800/f'))).toMatch(notUtf8)
+    expect(failure(`diff --git a\uD800/f b\uD800/f\n${pair('a/f', 'b/f')}`)).toMatch(notUtf8)
+  })
+
+  it('refuses a lone surrogate inside a quoted name', () => {
+    expect(failure(pair('"a/f\uD800"', '"b/f\uD800"'))).toMatch(notUtf8)
   })
 
   it('shows the bytes of a name that is not UTF-8 as octal escapes', () => {

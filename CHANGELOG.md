@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.11 (2026-10-27)
+
+- Unified: a NUL byte or a name that is not valid UTF-8 is refused with `PATCH_UNSUPPORTED` on every name as written, before the first path component is removed, `-p0` is guessed, a timestamp is cut or names are compared: the `diff --git` line (when header lines follow it), `---`/`+++` names of `diff --git` sections and of bare pairs with hunks, `rename from`/`rename to` (was: checked on the name that was left, so `--- "a\000z/f"` / `+++ "b\000z/f"` updated `f` where git cuts the names to `a` and `b`, guesses `-p0` and updates `b`, and the `diff --git` form, which git rejects, was accepted; `"a\377/f"` was read as `f`). A lone surrogate inside a quoted name is refused too (was: read as U+FFFD).
+- README: names with a NUL byte or invalid UTF-8 in a removed first component among the git-accepted refusals; where the name checks run.
+- Tests: nine name cases checked against the installed `git apply` (NUL bytes in and after the removed first component of bare pairs, with timestamps and in `diff --git` sections, a NUL byte in `rename from`, a skipped `diff --git` line with a NUL byte, invalid UTF-8 in the removed first component), two for lone surrogates.
+
 ## 1.1.10 (2026-10-27)
 
 - Unified: a C-quoted name keeps a leading byte order mark (was: the UTF-8 decoder dropped it, so `rename to "\357\273\277g"` created `g` where git creates U+FEFF followed by `g`, `rename from "\357\273\277f"` moved `f` instead, and a `-p0` pair `"\357\273\277f"` updated `f`).

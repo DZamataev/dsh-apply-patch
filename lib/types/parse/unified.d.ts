@@ -48,9 +48,11 @@
  *
  * The names an operation uses are checked as git checks them before writing
  * ({@link gitPathProblem}: no `.`, `..`, empty or `.git` components, no
- * leading or trailing `/`), and must be valid UTF-8 (`PATCH_UNSUPPORTED`
- * otherwise). The patch text arrives as a string, so bytes that are not UTF-8
- * come only from octal escapes of a C-quoted name, which are decoded strictly.
+ * leading or trailing `/`). Every name as written, before any component is
+ * removed, must be valid UTF-8 and free of NUL bytes ({@link checkRawName},
+ * `PATCH_UNSUPPORTED` otherwise). The patch text arrives as a string, so bytes
+ * that are not UTF-8 come only from octal escapes of a C-quoted name, which
+ * are decoded strictly, or from lone surrogates of the text.
  *
  * In a `diff --git` section the file moves when its old and new names differ
  * (`rename from`/`rename to`, or differing `---`/`+++` names), as with git;

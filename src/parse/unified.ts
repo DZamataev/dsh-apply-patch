@@ -48,9 +48,11 @@
  *
  * The names an operation uses are checked as git checks them before writing
  * ({@link gitPathProblem}: no `.`, `..`, empty or `.git` components, no
- * leading or trailing `/`), and must be valid UTF-8 (`PATCH_UNSUPPORTED`
- * otherwise). The patch text arrives as a string, so bytes that are not UTF-8
- * come only from octal escapes of a C-quoted name, which are decoded strictly.
+ * leading or trailing `/`). Every name as written, before any component is
+ * removed, must be valid UTF-8 and free of NUL bytes ({@link checkRawName},
+ * `PATCH_UNSUPPORTED` otherwise). The patch text arrives as a string, so bytes
+ * that are not UTF-8 come only from octal escapes of a C-quoted name, which
+ * are decoded strictly, or from lone surrogates of the text.
  *
  * In a `diff --git` section the file moves when its old and new names differ
  * (`rename from`/`rename to`, or differing `---`/`+++` names), as with git;
@@ -149,6 +151,12 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
     if (isFileHeader(lines, i)) {
       const bare: BarePair = { first: line.slice(4), second: lines[i + 1].slice(4), p: guessedAt === undefined ? 1 : 0, guessedAt }
       const next = i + 2 < lines.length ? HUNK.exec(lines[i + 2]) : null
+      // git reads the names of a pair only when a hunk follows it.
+      if (next !== null) {
+        for (const [index, name] of [[i, bare.first], [i + 1, bare.second]] as const) {
+          if (!isDevNull(name)) checkRawName(index + 1, rawNameTexts(name, TERM_TAB, true))
+        }
+      }
       if (next !== null && guessedAt === undefined && guessPair(bare.first, bare.second) === 0) {
         bare.p = 0
         // git guesses only for a pair followed by "@@ -"; an unnumbered hunk (an extra) is read as if numbered, without changing later sections.
@@ -197,7 +205,8 @@ export function parseUnifiedDiff(text: string): ParsedPatch {
  * old mode that is not a regular file.
  */
 function parseGitHeader(lines: readonly string[], at: number): { section: Section; next: number; metadata: boolean } {
-  const defaultName = gitHeaderName(lines[at].slice('diff --git '.length))
+  const diffNames: string[] = []
+  const defaultName = gitHeaderName(lines[at].slice('diff --git '.length), diffNames)
   let oldName: string | undefined
   let newName: string | undefined
   let isNew = false
@@ -224,11 +233,13 @@ function parseGitHeader(lines: readonly string[], at: number): { section: Sectio
     else if ((rest = after('deleted file mode ')) !== undefined) { isDelete = true; oldName = defaultName; oldMode = parseMode(lineNo, rest); oldModeLine = lineNo }
     else if ((rest = after('new file mode ')) !== undefined) { isNew = true; newName = defaultName; newMode = parseMode(lineNo, rest); newModeLine = lineNo }
     else if (line.startsWith('copy from ') || line.startsWith('copy to ')) throw parseError(lineNo, 'git copy headers are not supported; write the new file with "+" lines instead')
-    else if ((rest = after('rename old ') ?? after('rename from ')) !== undefined) { isRename = true; oldName = findName(rest, 0, TERM_NONE) ?? undefined }
-    else if ((rest = after('rename new ') ?? after('rename to ')) !== undefined) { isRename = true; newName = findName(rest, 0, TERM_NONE) ?? undefined }
+    else if ((rest = after('rename old ') ?? after('rename from ')) !== undefined) { isRename = true; oldName = renameName(lineNo, rest) }
+    else if ((rest = after('rename new ') ?? after('rename to ')) !== undefined) { isRename = true; newName = renameName(lineNo, rest) }
     else if (line.startsWith('similarity index ') || line.startsWith('dissimilarity index ')) { /* a score; git ignores a bad one */ }
     else if ((rest = after('index ')) !== undefined) { const mode = indexMode(rest); if (mode !== undefined) { oldMode = parseMode(lineNo, mode); oldModeLine = lineNo } }
     else break
+    // The "diff --git" line names files only when header lines follow it; otherwise git skips it as text.
+    if (j === at + 1) checkRawName(at + 1, diffNames)
     if (Number(isNew) + Number(isDelete) + Number(isRename) > 1) throw parseError(lineNo, `inconsistent header lines ${extensionLine} and ${lineNo}: a "diff --git" section is only one of a new file, a deleted file or a rename`)
     if ((isNew || isDelete || isRename) && extensionLine === undefined) extensionLine = lineNo
   }
@@ -252,6 +263,12 @@ function parseGitHeader(lines: readonly string[], at: number): { section: Sectio
   return { section, next: j, metadata: isNew || isDelete || isRename }
 }
 
+/** A `rename from`/`rename to` name, checked by {@link checkRawName}; `undefined` where git finds none. */
+function renameName(lineNo: number, rest: string): string | undefined {
+  checkRawName(lineNo, rawNameTexts(rest, TERM_NONE, false))
+  return findName(rest, 0, TERM_NONE) ?? undefined
+}
+
 /** `PATCH_UNSUPPORTED` for a header line of a valid diff that asks for more than file contents; nothing has been written. */
 function unsupported(lineNo: number, why: string): PatchError {
   return new PatchError('PATCH_UNSUPPORTED', `Unsupported patch at line ${lineNo}: ${why}.`)
@@ -265,6 +282,7 @@ function unsupported(lineNo: number, why: string): PatchError {
  */
 function verifyName(lineNo: number, raw: string, absent: boolean, known: string | undefined, side: 'old' | 'new'): string | undefined {
   const header = side === 'old' ? '---' : '+++'
+  if (!isDevNull(raw)) checkRawName(lineNo, rawNameTexts(raw, TERM_TAB, false))
   const kind = side === 'old' ? 'new file mode' : 'deleted file mode'
   if (known === undefined && !absent) {
     if (isDevNull(raw)) throw parseError(lineNo, `"${header} /dev/null" in a "diff --git" section needs a "${kind} 100644" line before it; without it git apply reads the file "dev/null"`)
@@ -515,20 +533,54 @@ function toOp(section: Section): PatchOp | null {
 }
 
 /**
+ * Refuse a name, as git reads it before removing leading components, guessing
+ * `-p`, cutting a timestamp or comparing it, that holds a NUL byte (git cuts a
+ * C-quoted name at a `\000`, which can change the components it removes and
+ * the file it patches) or is not valid UTF-8. Each text of `texts` is a
+ * decoded C-quoted name or the unquoted text git takes as the name.
+ * @throws {@link PatchError} `PATCH_UNSUPPORTED`.
+ */
+function checkRawName(lineNo: number, texts: readonly string[]): void {
+  for (const name of texts) {
+    if (name.includes('\0')) {
+      throw unsupported(lineNo, `the file name ${showName(name)} holds a NUL byte; names with NUL bytes are not supported (git apply would cut the name at it and use the part before it). Send the name without the NUL byte`)
+    }
+  }
+  for (const name of texts) {
+    if (hasLoneSurrogate(name)) {
+      throw unsupported(lineNo, `the file name ${showName(name)} is not valid UTF-8; apply_patch names files with UTF-8 text only. Rename the file with the shell, or send a name that is valid UTF-8`)
+    }
+  }
+}
+
+/**
+ * The texts of a `---`/`+++` or rename line that {@link checkRawName} checks:
+ * the unquoted text up to the first terminator (for a bare pair, the text
+ * before a timestamp), and the decoded name when the line starts with a
+ * C-quoted name.
+ * @param line - the line after its prefix, without its LF.
+ * @param traditional - a name of a bare pair, read by {@link traditionalName}.
+ */
+function rawNameTexts(line: string, terminators: string, traditional: boolean): string[] {
+  const stamp = traditional ? timestampLength(line) : 0
+  let end = 0
+  if (stamp > 0) end = line.length - stamp
+  else while (end < line.length && !terminators.includes(line[end])) end += 1
+  const texts = [line.slice(0, end)]
+  const quoted = line.startsWith('"') ? unquoteC(line, 0) : undefined
+  if (quoted !== undefined) texts.push(quoted.value)
+  return texts
+}
+
+/**
  * Refuse a name git refuses ({@link gitPathProblem}: git checks the old name
  * of a deletion or update and the new name of anything but a deletion, which
- * are the names of the operation), that is not valid UTF-8 or that holds a
- * NUL byte (git cuts a C-quoted name at a `\000`).
- * @throws {@link PatchError} `PATCH_PARSE` "invalid path" for a name git refuses, `PATCH_UNSUPPORTED` for a name that is not UTF-8 or holds a NUL byte.
+ * are the names of the operation). NUL bytes and names that are not UTF-8 are
+ * refused earlier, on the names as written ({@link checkRawName}).
+ * @throws {@link PatchError} `PATCH_PARSE` "invalid path" for a name git refuses.
  */
 function checkNames(op: PatchOp, start: number): void {
   for (const name of op.kind === 'update' && op.moveTo !== undefined ? [op.path, op.moveTo] : [op.path]) {
-    if (name.includes('\0')) {
-      throw unsupported(start, `the file name ${showName(name)} holds a NUL byte; names with NUL bytes are not supported (git apply would cut the name at it and use the part before it). Send the name without the NUL byte`)
-    }
-    if (hasLoneSurrogate(name)) {
-      throw unsupported(start, `the file name ${showName(name)} is not valid UTF-8; apply_patch names files with UTF-8 text only. Rename the file with the shell, or send a name that is valid UTF-8`)
-    }
     const problem = gitPathProblem(name)
     if (problem !== undefined) {
       throw parseError(start, `invalid path ${showName(name)}: it has ${problem}, and git apply refuses such a name. Name the file relative to the working directory, without ".", ".." or ".git" components and without a leading or trailing "/"`)
@@ -719,12 +771,15 @@ function skipTreePrefix(text: string): number | undefined {
  * CRLF line `diff --git a/f b/f` names `f` and `f\r` and has no default name,
  * as for git. A quoted name ends at its closing quote.
  * @param rest - the line after `diff --git `, without its LF.
+ * @param names - receives the texts {@link checkRawName} checks: `rest` and every C-quoted name git decodes in it.
  */
-function gitHeaderName(rest: string): string | undefined {
+function gitHeaderName(rest: string, names: string[]): string | undefined {
   const line = `${rest}\n`
+  names.push(rest)
   if (line.startsWith('"')) {
     const first = unquoteC(line, 0)
     if (first === undefined) return undefined
+    names.push(first.value)
     const cut = skipTreePrefix(first.value)
     if (cut === undefined) return undefined
     const name = first.value.slice(cut)
@@ -733,6 +788,7 @@ function gitHeaderName(rest: string): string | undefined {
     if (second >= line.length) return undefined
     if (line[second] === '"') {
       const other = unquoteC(line, second)
+      if (other !== undefined) names.push(other.value)
       const otherCut = other === undefined ? undefined : skipTreePrefix(other.value)
       return other !== undefined && otherCut !== undefined && other.value.slice(otherCut) === name ? name : undefined
     }
@@ -747,6 +803,7 @@ function gitHeaderName(rest: string): string | undefined {
   if (quote >= 0) {
     // A quote after an unquoted first name starts the second name.
     const other = unquoteC(line, quote)
+    if (other !== undefined) names.push(other.value)
     const otherCut = other === undefined ? undefined : skipTreePrefix(other.value)
     if (other === undefined || otherCut === undefined) return undefined
     const name = other.value.slice(otherCut)
