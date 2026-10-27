@@ -11,7 +11,12 @@
  * names no file by itself (`apply.c` `git_header_name`); and it ends a
  * `---`/`+++` or rename name, as `find_name` reads them. In a `diff --git`
  * section `---`/`+++` names lose their first path component and rename names
- * none, as git reads them with `-p1`.
+ * none, as git reads them with `-p1`. Names of a bare `---`/`+++` pair are
+ * read as `parse_traditional_patch` reads them ({@link bareNames}): with
+ * `-p1`, or `-p0` where git guesses it from names without a directory, and
+ * without a trailing timestamp; after a guessed `-p0`, which git keeps for the
+ * rest of the patch, a later `diff --git` line or a later name with a
+ * directory is refused.
  * File headers are recognized only between hunks. Git header lines (`index`,
  * modes, `new file mode`, `deleted file mode`, renames, `---`/`+++`) are read
  * only right after a `diff --git` line, up to the first line that is not one,
@@ -39,14 +44,14 @@
  * - a line starting with `\` is a newline marker only as git reads one ({@link isMarker}); inside a hunk any other such line is rejected, after a hunk it is skipped like other text there;
  * - `@@ @@` and `@@` without line numbers are accepted; such a hunk ends at the first line that is not ` `, `-`, `+` or `\`, or at a `---`/`+++` pair;
  * - the last line of the text may lack its LF (git rejects such a diff as corrupt);
- * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it), a CR or the end of the line; spaces around it are part of the path. Quoted C-style paths are decoded as git `unquote_c_style` decodes them; text after the closing quote is ignored.
+ * - a path ends at a TAB (git writes one after a path ending in a space; `diff -u` puts a timestamp after it), a CR or the end of the line; spaces around it are part of the path, except before a timestamp ending a bare `---`/`+++` line. Quoted C-style paths are decoded as git `unquote_c_style` decodes them; text after the closing quote is ignored.
  *
  * In a `diff --git` section the file moves when its old and new names differ
  * (`rename from`/`rename to`, or differing `---`/`+++` names), as with git;
  * `---`/`+++ /dev/null` there needs the `new file mode`/`deleted file mode`
- * line. Two differing names of a bare `---`/`+++` pair (`foo.c.orig` and
- * `foo.c`) patch the `+++` file. A bare pair creates (`--- /dev/null`) or
- * deletes (`+++ /dev/null`) a file only with hunks; without hunks it is text
+ * line. A bare pair creates (`--- /dev/null`, or an epoch `---` timestamp)
+ * or deletes (`+++ /dev/null`, or an epoch `+++` timestamp) a file only with
+ * hunks; without hunks it is text
  * git skips, so an empty file is created or deleted only by a `diff --git`
  * section with `new file mode` or `deleted file mode`.
  * @module dsh-apply-patch/parse/unified
