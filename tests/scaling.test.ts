@@ -123,6 +123,21 @@ describe('repetitive files', () => {
     expect(text === `${rows}1\n${rows}`.repeat(k) + `${row}\n`.repeat(n - 10 * k)).toBe(true)
     expect(ms).toBeLessThan(2000)
   })
+
+  it('finds an unnumbered unified hunk of 1,000 identical context lines and one unique line at the end of 200,000 identical lines in under 2 s', () => {
+    const tag = '1,1,1,1,1,1,1,1'
+    const file = `${row}\n`.repeat(n - 1) + `${tag}\n`
+    const { text, ms } = timed(file, `--- a/f\n+++ b/f\n@@ @@\n${` ${row}\n`.repeat(1000)}-${tag}\n+changed\n`, 'unified')
+    expect(text === `${row}\n`.repeat(n - 1) + 'changed\n').toBe(true)
+    expect(ms).toBeLessThan(2000)
+  })
+
+  it('refuses a stale unnumbered unified hunk of 3,000 identical context lines in a file of 200,000 identical lines in under 2 s', () => {
+    const chunks = chunksOf(`--- a/f\n+++ b/f\n@@ @@\n${` ${row}\n`.repeat(3000)}-1,1,1,1,1,1,1,1\n+2\n`, 'unified')
+    const start = performance.now()
+    expect(() => applyChunks('f', before, chunks, 'unified')).toThrow(/Could not find the lines of change 1/)
+    expect(performance.now() - start).toBeLessThan(2000)
+  })
 })
 
 const hasGit = spawnSync('git', ['--version']).status === 0

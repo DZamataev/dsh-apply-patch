@@ -291,7 +291,7 @@ function place(path: string, image: readonly ImageLine[], chunk: Chunk, old: rea
     if (at === expected || old.length === n) return at
     throw new PlacementError(`The hunk of ${label} has no context lines (like "git diff -U0" output); git apply would place it at line ${at + 1}, not at line ${expected + 1} where its header points. ${advice}`, false)
   }
-  const anywhere = image.findIndex((_, i) => fits(image, old, i))
+  const anywhere = firstFit(image, old, 0)
   if (anywhere < 0) throw unifiedMismatch(path, image, chunk, 0, k, false)
   const rule = atStart && atEnd ? 'cover the whole file' : atStart ? 'start at the beginning of the file' : 'end at the end of the file'
   const why = [atStart ? `its header starts at line ${chunk.oldStart ?? 0}` : '', atEnd ? 'it has no context lines after its last change' : ''].filter(Boolean).join(' and ')
@@ -301,8 +301,34 @@ function place(path: string, image: readonly ImageLine[], chunk: Chunk, old: rea
 /** A hunk without line numbers (`@@ @@`, accepted beyond git): the first match after the previous hunk; a pure addition appends. */
 function placeUnnumbered(path: string, image: readonly ImageLine[], chunk: Chunk, old: readonly Line[], cursor: number, k: number): number {
   if (old.length === 0) return image.length
-  for (let at = cursor; at + old.length <= image.length; at += 1) if (fits(image, old, at)) return at
-  throw unifiedMismatch(path, image, chunk, cursor, k, true)
+  const at = firstFit(image, old, cursor)
+  if (at < 0) throw unifiedMismatch(path, image, chunk, cursor, k, true)
+  return at
+}
+
+/**
+ * The first index at or after `from` where {@link fits} holds, or -1: one
+ * Knuth-Morris-Pratt pass over the image, so the time is linear in the image
+ * and `old` however many near matches the image has. A patched image line
+ * equals no line of `old`. An empty `old` fits at `from` when that is a line of the image.
+ */
+function firstFit(image: readonly ImageLine[], old: readonly Line[], from: number): number {
+  if (old.length === 0) return from < image.length ? from : -1
+  const same = (a: Line, b: Line) => a.text === b.text && a.eol === b.eol
+  // fail[j]: length of the longest proper prefix of old[0..j] that is also its suffix.
+  const fail = new Int32Array(old.length)
+  for (let j = 1, q = 0; j < old.length; j += 1) {
+    while (q > 0 && !same(old[j], old[q])) q = fail[q - 1]
+    if (same(old[j], old[q])) q += 1
+    fail[j] = q
+  }
+  const equal = (i: number, q: number) => !image[i].patched && same(image[i], old[q])
+  for (let i = from, q = 0; i < image.length; i += 1) {
+    while (q > 0 && !equal(i, q)) q = fail[q - 1]
+    if (equal(i, q)) q += 1
+    if (q === old.length) return i - old.length + 1
+  }
+  return -1
 }
 
 /** Context lines after the last change, as git counts them. */
