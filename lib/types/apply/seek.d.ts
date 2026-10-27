@@ -6,7 +6,10 @@
  * it includes U+0085 and excludes U+FEFF, unlike `String.prototype.trim`).
  *
  * An exact match takes the first candidate at or after the cursor, as
- * codex-rs does, and the search stops there. The tolerant levels accept only
+ * codex-rs does, and the search stops there. Each level is one
+ * Knuth-Morris-Pratt search over the normalized lines, so it compares
+ * O(file lines + pattern lines) lines also in a file of many near matches
+ * (codex-rs compares every candidate with the whole pattern). The tolerant levels accept only
  * a single candidate: where codex-rs edits the first of several tolerant
  * matches, two or more are reported as ambiguous instead, with at most
  * {@link AMBIGUOUS_SHOWN} of them.

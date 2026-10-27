@@ -88,6 +88,31 @@ describe('repetitive files', () => {
     expect(ms).toBeLessThan(2000)
   })
 
+  it('finds a Codex change of 1,000 identical context lines and one unique line at the end of 200,000 identical lines in under 2 s', () => {
+    const context = 1000
+    const tag = '1,1,1,1,1,1,1,1'
+    const file = `${row}\n`.repeat(n - 1) + `${tag}\n`
+    const { text, ms } = timed(file, `*** Begin Patch\n*** Update File: f\n@@\n${` ${row}\n`.repeat(context)}-${tag}\n+changed\n*** End Patch\n`, 'codex')
+    expect(text === `${row}\n`.repeat(n - 1) + 'changed\n').toBe(true)
+    expect(ms).toBeLessThan(2000)
+  })
+
+  it('finds the same change tolerating trailing whitespace in under 2 s', () => {
+    const context = 1000
+    const tag = '1,1,1,1,1,1,1,1'
+    const file = `${row} \n`.repeat(n - 1) + `${tag}\n`
+    const { text, ms } = timed(file, `*** Begin Patch\n*** Update File: f\n@@\n${` ${row}\n`.repeat(context)}-${tag}\n+changed\n*** End Patch\n`, 'codex')
+    expect(text === `${row} \n`.repeat(n - 1) + 'changed\n').toBe(true)
+    expect(ms).toBeLessThan(2000)
+  })
+
+  it('refuses a stale Codex change of 3,000 identical context lines in a file of 200,000 identical lines in under 2 s', () => {
+    const chunks = chunksOf(`*** Begin Patch\n*** Update File: f\n@@\n${` ${row}\n`.repeat(3000)}-1,1,1,1,1,1,1,1\n+2\n*** End Patch\n`, 'codex')
+    const start = performance.now()
+    expect(() => applyChunks('f', before, chunks, 'codex')).toThrow(/Could not find the lines of change 1/)
+    expect(performance.now() - start).toBeLessThan(2000)
+  })
+
   it('applies 200 unified hunks with 10 identical context lines each in under 2 s', () => {
     const half = ` ${row}\n`.repeat(5)
     const k = 200
