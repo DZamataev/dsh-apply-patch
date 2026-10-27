@@ -196,6 +196,38 @@ describe('relocated numbered unified hunks', () => {
   })
 })
 
+describe('many Codex changes found only by tolerant matching', () => {
+  const n = 200_000
+  const records = Array.from({ length: n }, (_, i) => `record_${i}_abcdefghijklmnopqrstuvwxyz `)
+  const before = `${records.join('\n')}\n`
+
+  it('applies 2,000 one-line changes whose old lines lack the trailing space of an 8 MB file in under 2 s', () => {
+    const wanted = [...records]
+    let body = ''
+    for (let j = 0; j < 2000; j += 1) {
+      const at = 1 + Math.floor(j * (n - 3) / 2000)
+      wanted[at] = `changed_${j}`
+      body += `@@\n-${records[at].trimEnd()}\n+${wanted[at]}\n`
+    }
+    const { text, ms } = timed(before, `*** Begin Patch\n*** Update File: f\n${body}*** End Patch\n`, 'codex')
+    expect(text === `${wanted.join('\n')}\n`).toBe(true)
+    expect(ms).toBeLessThan(2000)
+  })
+
+  it('applies 2,000 changes whose "@@" lines lack the trailing space in under 2 s', () => {
+    const wanted = [...records]
+    let body = ''
+    for (let j = 0; j < 2000; j += 1) {
+      const at = 1 + Math.floor(j * (n - 3) / 2000)
+      wanted[at + 1] = `changed_${j}`
+      body += `@@ ${records[at].trimEnd()}\n-${records[at + 1]}\n+${wanted[at + 1]}\n`
+    }
+    const { text, ms } = timed(before, `*** Begin Patch\n*** Update File: f\n${body}*** End Patch\n`, 'codex')
+    expect(text === `${wanted.join('\n')}\n`).toBe(true)
+    expect(ms).toBeLessThan(2000)
+  })
+})
+
 /**
  * Multi-hunk diffs that `git diff` writes for random edits of a file with CRLF
  * lines and without its final newline, applied in their order, reversed and

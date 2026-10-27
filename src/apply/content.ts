@@ -24,7 +24,7 @@
 
 import { PatchError, quote } from '../errors.js'
 import type { Chunk } from '../parse/types.js'
-import { AMBIGUOUS_SHOWN, seek } from './seek.js'
+import { AMBIGUOUS_SHOWN, LineSearch, seek } from './seek.js'
 import type { SeekResult } from './seek.js'
 
 /**
@@ -85,13 +85,14 @@ function applyCodex(path: string, before: string, chunks: readonly Chunk[]): str
   const lines = split(before, /\r\n|\r|\n/g)
   const eol = lines.find(line => line.eol !== '')?.eol ?? '\n'
   const texts = lines.map(line => line.text)
+  const search = new LineSearch(texts)
   const fresh = (text: string): Line => ({ text, eol })
   const replacements: Replacement[] = []
   let cursor = 0
   chunks.forEach((chunk, k) => {
     const label = `change ${k + 1} of "${path}"`
     for (const text of chunk.labels) {
-      const found = seek(texts, [text], cursor)
+      const found = search.seek([text], cursor)
       if (found.kind === 'none') {
         throw new PlacementError(`Could not find the "@@ ${text}" line of ${label} at or after line ${cursor + 1}. ${orderNote(k)}`.trimEnd(), true)
       }
@@ -104,7 +105,7 @@ function applyCodex(path: string, before: string, chunks: readonly Chunk[]): str
     let found: SeekResult = { kind: 'none' }
     let variant = { old: chunk.oldLines, neu: chunk.newLines }
     for (const candidate of codexVariants(chunk)) {
-      found = seek(texts, candidate.old, cursor, { endOfFile: chunk.endOfFile })
+      found = search.seek(candidate.old, cursor, { endOfFile: chunk.endOfFile })
       if (found.kind !== 'none') { variant = candidate; break }
     }
     if (found.kind === 'ambiguous') {
